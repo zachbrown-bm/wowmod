@@ -1,46 +1,111 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Builds wowmod in release mode and installs it onto your PATH.
+    Installs the wowmod command-line tool so it can be run from any terminal.
 
 .DESCRIPTION
-    Runs `cargo install --path <repo> --locked`, which puts wowmod.exe in
-    Cargo's bin directory (%USERPROFILE%\.cargo\bin by default, or $CARGO_HOME\bin).
-    The Rust installer adds that directory to PATH, so after this finishes you
-    can run `wowmod` from any terminal.
+    Copies wowmod.exe to %LOCALAPPDATA%\Programs\wowmod and adds that folder to
+    your user PATH. No Rust toolchain is needed for the default mode.
 
-    Re-run the script after pulling changes to upgrade. Remove with:
-        cargo uninstall wowmod
+    Default:  downloads the latest GitHub release (or -Version vX.Y.Z).
+    -Local:   installs the exe you already built with `cargo build --release`
+              (target\release\wowmod.exe next to this script), overwriting any
+              release build that was installed earlier.
 
 .EXAMPLE
+    # Users: one line, no clone needed
+    irm https://raw.githubusercontent.com/zachbrown-bm/wowmod/main/install.ps1 | iex
+
+.EXAMPLE
+    # Users: from a clone, or pin a version
     .\install.ps1
+    .\install.ps1 -Version v0.1.0
+
+.EXAMPLE
+    # Developers: install what you just built
+    cargo build --release
+    .\install.ps1 -Local
 #>
 [CmdletBinding()]
-param()
+param(
+    [switch]$Local,
+    [string]$Version = 'latest',
+    [string]$Repo = 'zachbrown-bm/wowmod'
+)
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Error "cargo was not found. Install Rust from https://rustup.rs and open a new terminal, then re-run this script."
-}
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\wowmod'
+$target = Join-Path $installDir 'wowmod.exe'
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
-$repo = $PSScriptRoot
-Write-Host "Installing wowmod from $repo ..."
-cargo install --path $repo --locked
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "cargo install failed with exit code $LASTEXITCODE."
-}
-
-if ($env:CARGO_HOME) { $binDir = Join-Path $env:CARGO_HOME 'bin' }
-else                 { $binDir = Join-Path $HOME '.cargo\bin' }
-
-$onPath = ($env:PATH -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $binDir.TrimEnd('\')) }
-if ($onPath) {
-    Write-Host ""
-    Write-Host "Installed: $(Join-Path $binDir 'wowmod.exe')"
-    Write-Host "Run 'wowmod' from any terminal. Re-run this script to upgrade, 'cargo uninstall wowmod' to remove."
+if ($Local) {
+    if (-not $PSScriptRoot) {
+        Write-Error "-Local only works when the script is run from a clone of the repo (not piped to iex)."
+    }
+    $built = Join-Path $PSScriptRoot 'target\release\wowmod.exe'
+    if (-not (Test-Path $built)) {
+        Write-Error "No release build at $built. Run 'cargo build --release' first."
+    }
+    Write-Host "Installing local build $built"
+    Copy-Item $built $target -Force
 } else {
-    Write-Warning "$binDir is not on your PATH. Add it (System Properties > Environment Variables, or:)"
-    Write-Host "    [Environment]::SetEnvironmentVariable('Path', `$env:Path + ';$binDir', 'User')"
-    Write-Host "then open a new terminal."
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $api = if ($Version -eq 'latest') { "https://api.github.com/repos/$Repo/releases/latest" }
+           else { "https://api.github.com/repos/$Repo/releases/tags/$Version" }
+    Write-Host "Looking up $Version release of $Repo ..."
+    try {
+        $release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'wowmod-install' }
+    } catch {
+        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
+            Write-Error "No $Version release found at https://github.com/$Repo/releases. Developers: 'cargo build --release' then '.\install.ps1 -Local'."
+        }
+        throw
+    }
+    $asset = $release.assets | Where-Object { $_.name -eq 'wowmod-windows-x86_64.zip' } | Select-Object -First 1
+    if (-not $asset) {
+        Write-Error "Release $($release.tag_name) has no wowmod-windows-x86_64.zip asset."
+    }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("wowmod-install-" + [IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    try {
+        $zip = Join-Path $tmp $asset.name
+        Write-Host "Downloading $($asset.browser_download_url)"
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        $exe = Get-ChildItem -Path $tmp -Recurse -Filter 'wowmod.exe' | Select-Object -First 1
+        if (-not $exe) { Write-Error "wowmod.exe was not found inside $($asset.name)." }
+        Write-Host "Installing $($release.tag_name)"
+        Copy-Item $exe.FullName $target -Force
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
+# Make sure the install folder is on the user's PATH (persisted + this session).
+function Test-OnPath([string]$PathList) {
+    [bool](($PathList -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $installDir) })
+}
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not (Test-OnPath $userPath)) {
+    $newPath = if ($userPath) { "$userPath;$installDir" } else { $installDir }
+    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    Write-Host "Added $installDir to your user PATH. Open a new terminal to pick it up."
+}
+if (-not (Test-OnPath $env:Path)) {
+    $env:Path = "$env:Path;$installDir"
+}
+
+Write-Host ""
+Write-Host "Installed: $target"
+& $target --version
+
+# Warn if a different wowmod earlier on PATH would shadow this one.
+$others = @(Get-Command wowmod -All -ErrorAction SilentlyContinue |
+    Where-Object { $_.Source -and ($_.Source -ine $target) })
+if ($others) {
+    Write-Warning "Another wowmod is also on your PATH and may run instead of this one:"
+    $others | ForEach-Object { Write-Host "    $($_.Source)" }
+    Write-Host "Remove it (for a cargo install: 'cargo uninstall wowmod') or move $installDir earlier in PATH."
 }

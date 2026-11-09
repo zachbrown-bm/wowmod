@@ -11,19 +11,47 @@ wowmod install DBM.zip --flavor wowf
 
 ## Installing
 
-You need Rust ([rustup.rs](https://rustup.rs)). Then, from a clone of this
-repo:
+### Users (no Rust needed)
+
+Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/zachbrown-bm/wowmod/main/install.ps1 | iex
+```
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/zachbrown-bm/wowmod/main/install.sh | sh
+```
+
+This downloads the latest [GitHub release](https://github.com/zachbrown-bm/wowmod/releases),
+puts the binary in `%LOCALAPPDATA%\Programs\wowmod` (Windows) or `~/.local/bin`
+(macOS / Linux), and adds that folder to your `PATH` on Windows. Re-run to
+upgrade. From a clone you can also run `.\install.ps1 -Version v0.1.0` to pin a
+version. You can always grab the zip from the releases page by hand instead.
+
+### Developers
+
+Build, then install the binary you just built over whatever is installed:
 
 ```
-.\install.ps1        # Windows (PowerShell)
-./install.sh         # macOS / Linux
+cargo build --release
+.\install.ps1 -Local        # Windows
+./install.sh --local        # macOS / Linux
 ```
 
-Both run `cargo install --path . --locked`, which builds a release binary and
-copies it to Cargo's bin directory (`%USERPROFILE%\.cargo\bin`, or
-`$CARGO_HOME\bin`). rustup puts that directory on your `PATH`, so `wowmod`
-then works from any terminal. The script warns if it is not on `PATH`.
-Re-run the script after pulling to upgrade; `cargo uninstall wowmod` removes it.
+Same install folder as the release build, so the dev build replaces it.
+
+### Cutting a release
+
+Push a version tag and the `Release` workflow builds Windows, macOS and Linux
+binaries and attaches them to a GitHub Release:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## What it does
 
@@ -209,4 +237,4 @@ logout, so do this only while the game is not running.
 - Watch the Downloads folder and offer to install a newly finished zip.
 - Open the addon's folder or project page from the details dialog.
 - Theme configuration.
-- Package for winget and a portable zip (`cargo install` works today via `install.ps1` / `install.sh`).
+- Package for winget (GitHub releases and install scripts exist; see Installing).

@@ -18,6 +18,7 @@ use crate::config::Config;
 #[derive(Parser)]
 #[command(
     name = "wowmod",
+    version,
     about = "Install and manage World of Warcraft addons from a terminal"
 )]
 struct Cli {

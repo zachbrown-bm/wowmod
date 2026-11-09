@@ -1,6 +1,6 @@
 //! User-configurable key bindings.
 //!
-//! Bindings live in `%APPDATA%\wowmod\config\wowmod.config` (TOML). The file is
+//! Bindings live in `%APPDATA%\wowmod\config\keymaps.toml` (TOML). The file is
 //! written with the defaults the first time the app runs and is only ever
 //! read after that, so comments and edits survive. Every action maps to a
 //! list of keys; an action missing from the file keeps its default and an
@@ -300,7 +300,7 @@ impl Default for Keymap {
 impl Keymap {
     pub fn path() -> Option<PathBuf> {
         let dirs = directories::ProjectDirs::from("", "", "wowmod")?;
-        Some(dirs.config_dir().join("wowmod.config"))
+        Some(dirs.config_dir().join("keymaps.toml"))
     }
 
     /// Load the user's bindings, creating the file with defaults if it does
@@ -317,6 +317,11 @@ impl Keymap {
     }
 
     pub fn load_from(path: &Path) -> (Keymap, Vec<String>) {
+        // Versions before keymaps.toml used wowmod.config; carry it over.
+        let legacy = path.with_file_name("wowmod.config");
+        if !path.exists() && legacy.is_file() {
+            let _ = fs::rename(&legacy, path);
+        }
         if !path.exists() {
             return match Keymap::default().write_template(path) {
                 Ok(()) => (Keymap::default(), Vec::new()),
@@ -566,7 +571,7 @@ mod tests {
     #[test]
     fn load_creates_the_file_then_reads_it() {
         let temp = crate::package::TempDir::new().unwrap();
-        let path = temp.path.join("sub").join("wowmod.config");
+        let path = temp.path.join("sub").join("keymaps.toml");
         let (km, warnings) = Keymap::load_from(&path);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(path.is_file());
@@ -581,5 +586,23 @@ mod tests {
         let (km, warnings) = Keymap::load_from(&path);
         assert!(!warnings.is_empty());
         assert_eq!(km.label(Action::Uninstall), "u");
+    }
+
+    #[test]
+    fn legacy_wowmod_config_is_renamed() {
+        let temp = crate::package::TempDir::new().unwrap();
+        let legacy = temp.path.join("wowmod.config");
+        let path = temp.path.join("keymaps.toml");
+        fs::write(
+            &legacy,
+            "uninstall = [\"Del\"]
+",
+        )
+        .unwrap();
+        let (km, warnings) = Keymap::load_from(&path);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(km.label(Action::Uninstall), "Del");
+        assert!(path.is_file());
+        assert!(!legacy.exists());
     }
 }

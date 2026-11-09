@@ -70,7 +70,7 @@ Press `?` in the app for the full list. The defaults are below.
 
 ### Changing keys
 
-The first run writes `%APPDATA%\wowmod\config\wowmod.config` with every action and
+The first run writes `%APPDATA%\wowmod\config\keymaps.toml` with every action and
 its default keys. Edit the lists there and restart; the status bar, dialog
 footers and help screen all show whatever you configured. Remove an action
 to get its default back, or set it to `[]` to unbind it. The app never
@@ -100,7 +100,7 @@ src/addon.rs       scanning + grouping installed addons, enable state
 src/package.rs     zip extraction + addon root detection
 src/installer.rs   copy/backup/uninstall/rollback
 src/config.rs      persisted settings
-src/keymap.rs      configurable key bindings (wowmod.config)
+src/keymap.rs      configurable key bindings (keymaps.toml)
 src/ui/            ratatui app, browser, rendering
 ```
 

@@ -103,7 +103,9 @@ key_color = "light yellow"
 
 ## Keys
 
-Press `?` in the app for the full list. The defaults are below.
+Press `?` in the app for the full list. The defaults are below. A left click
+on a panel focuses it as well. Because the app captures the mouse, hold
+`Shift` while dragging to select terminal text.
 
 | Key | Action |
 |---|---|

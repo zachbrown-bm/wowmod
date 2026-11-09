@@ -9,7 +9,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use ratatui::widgets::ListState;
 
@@ -27,6 +32,31 @@ pub enum Focus {
     Browser,
     Installs,
     Addons,
+}
+
+/// Screen rectangles of the three panels from the last draw. Zero-sized
+/// until the first frame, so clicks before then match nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PanelAreas {
+    pub browser: Rect,
+    pub installs: Rect,
+    pub addons: Rect,
+}
+
+impl PanelAreas {
+    /// The panel drawn at this screen position, if any.
+    pub fn panel_at(&self, column: u16, row: u16) -> Option<Focus> {
+        let p = Position::new(column, row);
+        if self.browser.contains(p) {
+            Some(Focus::Browser)
+        } else if self.installs.contains(p) {
+            Some(Focus::Installs)
+        } else if self.addons.contains(p) {
+            Some(Focus::Addons)
+        } else {
+            None
+        }
+    }
 }
 
 /// Something that needs a yes/no, or text, before continuing.
@@ -87,6 +117,8 @@ pub struct App {
     pub addons: Vec<InstalledAddon>,
     pub addon_state: ListState,
     pub focus: Focus,
+    /// Where each panel was drawn last frame, so mouse clicks can focus it.
+    pub panel_areas: PanelAreas,
     pub modal: Option<Modal>,
     pub status: String,
     pub preview: Option<Preview>,
@@ -124,6 +156,7 @@ impl App {
             addons: Vec::new(),
             addon_state: ListState::default(),
             focus: Focus::Browser,
+            panel_areas: PanelAreas::default(),
             modal: None,
             status: String::new(),
             preview: None,
@@ -500,6 +533,20 @@ impl App {
         });
     }
 
+    // ----- mouse handling ------------------------------------------------
+
+    /// A left click focuses the panel under the pointer. Dialogs keep the
+    /// mouse out, like they do the keys, so a stray click cannot change
+    /// what a confirmation applies to.
+    pub fn handle_click(&mut self, column: u16, row: u16) {
+        if self.modal.is_some() {
+            return;
+        }
+        if let Some(panel) = self.panel_areas.panel_at(column, row) {
+            self.focus = panel;
+        }
+    }
+
     // ----- key handling --------------------------------------------------
 
     fn handle_key(&mut self, key: event::KeyEvent) {
@@ -803,6 +850,10 @@ impl App {
 pub fn run(config: Config) -> Result<()> {
     let (keys, mut warnings) = Keymap::load();
     let mut terminal = ratatui::init();
+    // ratatui::init() sets up raw mode and the alternate screen but not the
+    // mouse; clicks are used to focus panels. Failing to enable it is not
+    // fatal, the keyboard still works.
+    let mouse = execute!(std::io::stdout(), EnableMouseCapture).is_ok();
     let mut app = App::new(config, keys);
     warnings.append(&mut app.startup_warnings);
     if !warnings.is_empty() {
@@ -812,6 +863,9 @@ pub fn run(config: Config) -> Result<()> {
         });
     }
     let result = event_loop(&mut terminal, &mut app);
+    if mouse {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
     ratatui::restore();
     app.config.browse_dir = Some(app.browser.cwd.clone());
     if let Err(e) = app.config.save() {
@@ -827,6 +881,9 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(k) => app.handle_key(k),
+                Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    app.handle_click(m.column, m.row)
+                }
                 Event::Paste(s) => {
                     if let Some(Modal::Input { value, .. }) = &mut app.modal {
                         value.push_str(&s);
@@ -1145,6 +1202,55 @@ wow
             assert_eq!(buf[(x, 0)].fg, Color::Rgb(0x8a, 0x8a, 0x8a), "{key}");
             assert_eq!(buf[(x + 2, 0)].fg, Color::DarkGray, "{key}");
         }
+    }
+
+    #[test]
+    fn clicking_a_panel_focuses_it() {
+        let mut app = App::new(
+            Config {
+                wow_roots: Vec::new(),
+                browse_dir: Some(std::env::temp_dir()),
+                ..Config::default()
+            },
+            Keymap::default(),
+        );
+        // Nothing has been drawn yet, so a click lands on no panel.
+        app.handle_click(10, 10);
+        assert_eq!(app.focus, Focus::Browser);
+
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let areas = app.panel_areas;
+        assert!(areas.browser.width > 0 && areas.installs.width > 0 && areas.addons.width > 0);
+        // Left column is Browser, right column splits into Installs over Addons.
+        assert_eq!(areas.browser.x, 0);
+        assert_eq!(areas.installs.x, areas.addons.x);
+        assert_eq!(areas.installs.bottom(), areas.addons.y);
+
+        let mid = |r: Rect| (r.x + r.width / 2, r.y + r.height / 2);
+        let (c, r) = mid(areas.addons);
+        app.handle_click(c, r);
+        assert_eq!(app.focus, Focus::Addons);
+        let (c, r) = mid(areas.installs);
+        app.handle_click(c, r);
+        assert_eq!(app.focus, Focus::Installs);
+        // Clicking the preview pane (bottom of the left column) still means Browser.
+        app.handle_click(areas.browser.x + 1, areas.browser.bottom() - 2);
+        assert_eq!(app.focus, Focus::Browser);
+        // The status bar row below the panels belongs to none of them.
+        app.focus = Focus::Addons;
+        app.handle_click(5, 31);
+        assert_eq!(app.focus, Focus::Addons);
+
+        // A dialog swallows clicks.
+        app.modal = Some(Modal::Message {
+            title: "x".into(),
+            lines: vec![],
+        });
+        let (c, r) = mid(areas.installs);
+        app.handle_click(c, r);
+        assert_eq!(app.focus, Focus::Addons);
     }
 
     fn buffer_text(backend: &TestBackend) -> String {

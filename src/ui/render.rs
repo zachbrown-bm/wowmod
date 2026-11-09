@@ -70,6 +70,8 @@ fn draw_left(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(preview_height.clamp(4, area.height / 2)),
         ])
         .split(area);
+    // The preview pane belongs to browsing, so a click on it focuses Browser.
+    app.panel_areas.browser = area;
 
     let focused = app.focus == Focus::Browser;
     let title = format!("Browse  {}", app.browser.cwd.display());
@@ -228,6 +230,8 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(installs_height), Constraint::Min(3)])
         .split(area);
+    app.panel_areas.installs = parts[0];
+    app.panel_areas.addons = parts[1];
 
     // Installs
     let focused = app.focus == Focus::Installs;

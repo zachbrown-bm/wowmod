@@ -239,7 +239,7 @@ impl Action {
             Action::Last => "jump to the last entry",
             Action::Back => "browser: parent folder / addons: back to installs",
             Action::Forward => "browser: open folder / installs: go to addons",
-            Action::Select => "browser: open folder or show details / addons: show details",
+            Action::Select => "browser: show details of a zip or addon folder / addons: show details",
             Action::Mark => "installs: mark extra install targets",
             Action::Confirm => "dialogs: confirm",
             Action::Cancel => "dialogs: cancel",

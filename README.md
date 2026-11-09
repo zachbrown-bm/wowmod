@@ -112,7 +112,7 @@ on a panel focuses it as well. Because the app captures the mouse, hold
 |---|---|
 | Tab / 1 2 3 | switch panel |
 | i | install selected zip or addon folder |
-| Enter | open folder, or show details of the selected zip / addon folder |
+| Enter | show details of the selected zip / addon folder |
 | ← Backspace / → | parent folder / open folder |
 | g | type a folder path to browse |
 | f | show all files, not just zips and folders |

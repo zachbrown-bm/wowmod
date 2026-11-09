@@ -703,10 +703,16 @@ impl App {
                 });
                 if is_addon_like {
                     self.show_package_details();
-                    false
-                } else {
-                    self.browser.enter()
+                } else if self.browser.selected().is_some() {
+                    // Folders are entered with Forward only, so Enter means
+                    // "details" everywhere.
+                    self.status = format!(
+                        "{} opens a folder; {} shows details of a zip or addon folder.",
+                        self.keys.short(Action::Forward),
+                        self.keys.short(Action::Select)
+                    );
                 }
+                false
             }
             _ => false,
         };

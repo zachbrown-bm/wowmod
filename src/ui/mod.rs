@@ -1133,14 +1133,17 @@ wow
         assert_eq!(buf[(x, y)].fg, Color::Rgb(0x8a, 0x8a, 0x8a));
         assert_eq!(buf[(x + 2, y)].fg, Color::DarkGray);
 
-        // Panel titles start with their hot key in the key color too.
-        let top: String = (0..buf.area.width)
-            .map(|x| buf[(x, 0)].symbol())
-            .collect::<Vec<_>>()
-            .join("");
+        // Panel titles start with their hot key in the key color too. Index by
+        // cell, not byte: the border glyphs are multi-byte.
+        let cells: Vec<String> = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
         for key in ["1 Browse", "2 WoW installs"] {
-            let x = top.find(key).unwrap() as u16;
+            let x = (0..cells.len())
+                .find(|&i| cells[i..].join("").starts_with(key))
+                .unwrap() as u16;
             assert_eq!(buf[(x, 0)].fg, Color::Rgb(0x8a, 0x8a, 0x8a), "{key}");
+            assert_eq!(buf[(x + 2, 0)].fg, Color::DarkGray, "{key}");
         }
     }
 

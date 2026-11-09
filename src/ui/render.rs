@@ -10,6 +10,7 @@ use super::browser::Kind;
 use super::{App, Focus, Modal};
 use crate::addon;
 use crate::flavor::interface_to_version;
+use crate::keymap::{Action, Keymap};
 
 const ACCENT: Color = Color::Yellow;
 const DIM: Color = Color::DarkGray;
@@ -343,10 +344,30 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    let k = |a: Action| app.keys.short(a);
     let keys = match app.focus {
-        Focus::Browser => "Enter/i install  ←/Bksp up  →/Enter open  g go to  f filter",
-        Focus::Installs => "Space mark  Enter addons  u uninstall  r rollback",
-        Focus::Addons => "Enter details  u uninstall  r rollback",
+        Focus::Browser => format!(
+            "{}/{} install  {} up  {} open  {} go to  {} filter",
+            k(Action::Select),
+            k(Action::Install),
+            k(Action::Back),
+            k(Action::Forward),
+            k(Action::GoTo),
+            k(Action::ToggleFilter)
+        ),
+        Focus::Installs => format!(
+            "{} mark  {} addons  {} uninstall  {} rollback",
+            k(Action::Mark),
+            k(Action::Select),
+            k(Action::Uninstall),
+            k(Action::Rollback)
+        ),
+        Focus::Addons => format!(
+            "{} details  {} uninstall  {} rollback",
+            k(Action::Select),
+            k(Action::Uninstall),
+            k(Action::Rollback)
+        ),
     };
     let backups = if app.config.backups {
         "backups on"
@@ -354,11 +375,17 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         "backups OFF"
     };
     let left = if app.status.is_empty() {
-        keys.to_string()
+        keys
     } else {
         app.status.clone()
     };
-    let right = format!(" Tab panels  b {backups}  ? help  q quit ");
+    let right = format!(
+        " {} panels  {} {backups}  {} help  {} quit ",
+        k(Action::NextPanel),
+        k(Action::ToggleBackups),
+        k(Action::Help),
+        k(Action::Quit)
+    );
     let width = area.width as usize;
     let left_w = width.saturating_sub(right.len());
     let line = Line::from(vec![
@@ -388,16 +415,25 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
     let Some(modal) = &app.modal else { return };
-    let (title, lines, footer): (String, Vec<Line>, &str) = match modal {
-        Modal::Help => (
-            "Help".into(),
-            HELP.lines().map(|l| Line::from(l.to_string())).collect(),
-            " any key to close ",
-        ),
+    let km = &app.keys;
+    let mut scroll = 0;
+    let (title, lines, footer): (String, Vec<Line>, String) = match modal {
+        Modal::Help { scroll: s } => {
+            scroll = *s;
+            (
+                "Help".into(),
+                help_lines(km).into_iter().map(Line::from).collect(),
+                format!(
+                    " {}/{} scroll    any other key to close ",
+                    km.short(Action::Up),
+                    km.short(Action::Down)
+                ),
+            )
+        }
         Modal::Message { title, lines } => (
             title.clone(),
             lines.iter().map(|l| Line::from(l.clone())).collect(),
-            " any key to close ",
+            " any key to close ".into(),
         ),
         Modal::Confirm { title, lines, .. } => (
             title.clone(),
@@ -412,7 +448,11 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                     }
                 })
                 .collect(),
-            " y / Enter confirm    n / Esc cancel ",
+            format!(
+                " {} confirm    {} cancel ",
+                km.label(Action::Confirm),
+                km.label(Action::Cancel)
+            ),
         ),
         Modal::Uninstall { lines, backup, .. } => {
             let mut out: Vec<Line> = lines.iter().map(|l| Line::from(l.clone())).collect();
@@ -433,7 +473,12 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
             (
                 "Uninstall?".into(),
                 out,
-                " Space toggle backup    y / Enter uninstall    n / Esc cancel ",
+                format!(
+                    " {} toggle backup    {} uninstall    {} cancel ",
+                    km.label(Action::Toggle),
+                    km.label(Action::Confirm),
+                    km.label(Action::Cancel)
+                ),
             )
         }
         Modal::Input { title, value, .. } => (
@@ -443,7 +488,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(""),
                 Line::from("Paste or type a path.").fg(DIM),
             ],
-            " Enter ok    Esc cancel ",
+            " Enter ok    Esc cancel ".into(),
         ),
     };
     let width = lines
@@ -466,36 +511,47 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
         ))
         .title_bottom(Line::from(footer).fg(DIM).alignment(Alignment::Right))
         .padding(Padding::horizontal(1));
+    let max_scroll = (lines.len() as u16).saturating_sub(rect.height.saturating_sub(2));
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((scroll.min(max_scroll), 0)),
         rect,
     );
 }
 
-const HELP: &str = "\
-Navigation
-  Tab / Shift-Tab   cycle panels          1 2 3   jump to panel
-  Up/Down j/k       move                  PgUp/PgDn Home End
-
-Browser (left)
-  Right / l         open folder           Left / h / Backspace   parent folder
-  Enter             open folder, or install when on a zip / addon folder
-  i                 install the selected zip or folder
-  g                 type a folder path    f   show all files (not just zips)
-
-WoW installs / installed addons (right)
-  Space             mark extra install targets (install to several flavors)
-  Enter             show addon details    u   uninstall selected addon
-  r                 roll back selected addon to its newest backup
-  a                 add a World of Warcraft folder that was not detected
-
-General
-  R / F5            refresh everything    b   toggle backups on replace/uninstall
-  ?                 this help             q / Esc   quit
-
-The uninstall dialog has a back-up-first checkbox (Space) preset from the b setting.
-Backups live in <flavor>\\Interface\\AddOns.wowmod-backup\\<Folder>-<timestamp>.
-Zips are extracted to a temp folder; the addon root is the folder holding
-<Name>.toc, even if the zip wraps it in another folder (GitHub style).";
+/// The help screen, built from the live key bindings.
+fn help_lines(km: &Keymap) -> Vec<String> {
+    let mut out = Vec::new();
+    match Keymap::path() {
+        Some(p) => {
+            out.push(format!("Keys are set in {}", p.display()));
+            out.push("Edit the file and restart wowmod to apply changes.".into());
+        }
+        None => out.push("Default keys (no config directory found).".into()),
+    }
+    let sections: [(&str, &[Action]); 3] = [
+        ("Global", Action::GLOBAL),
+        ("Navigation inside the focused panel", Action::NAV),
+        ("Dialogs", Action::MODAL),
+    ];
+    for (title, actions) in sections {
+        out.push(String::new());
+        out.push(title.to_string());
+        for &a in actions {
+            out.push(format!("  {:<18} {}", km.label(a), a.describe()));
+        }
+    }
+    out.push(String::new());
+    out.push(format!(
+        "The uninstall dialog has a back-up-first checkbox preset from the {} setting.",
+        km.short(Action::ToggleBackups)
+    ));
+    out.push(
+        "Backups live in <flavor>\\Interface\\AddOns.wowmod-backup\\<Folder>-<timestamp>.".into(),
+    );
+    out.push("Zips are extracted to a temp folder; the addon root is the folder holding".into());
+    out.push("<Name>.toc, even if the zip wraps it in another folder (GitHub style).".into());
+    out
+}

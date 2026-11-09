@@ -9,13 +9,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::widgets::ListState;
 
 use crate::addon::{self, InstalledAddon};
 use crate::config::Config;
 use crate::flavor::Flavor;
 use crate::installer;
+use crate::keymap::{Action, Keymap};
 use crate::package::Package;
 use crate::wow::{self, Install};
 use browser::Browser;
@@ -29,11 +30,13 @@ pub enum Focus {
 
 /// Something that needs a yes/no, or text, before continuing.
 pub enum Modal {
-    Help,
+    Help {
+        scroll: u16,
+    },
     Confirm {
         title: String,
         lines: Vec<String>,
-        action: Action,
+        action: ConfirmAction,
     },
     Input {
         title: String,
@@ -52,7 +55,7 @@ pub enum Modal {
     },
 }
 
-pub enum Action {
+pub enum ConfirmAction {
     Install,
     Rollback { folder: String, backup: PathBuf },
 }
@@ -70,6 +73,7 @@ pub struct Preview {
 
 pub struct App {
     pub config: Config,
+    pub keys: Keymap,
     pub browser: Browser,
     pub installs: Vec<Install>,
     pub install_state: ListState,
@@ -89,7 +93,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config) -> App {
+    pub fn new(config: Config, keys: Keymap) -> App {
         let installs = wow::discover(&config.wow_roots);
         let browser = Browser::new(config.start_dir(), config.filter_browser);
         let (tx, rx) = mpsc::channel();
@@ -110,6 +114,7 @@ impl App {
             preview_tx: tx,
             should_quit: false,
             config,
+            keys,
         };
         if !app.installs.is_empty() {
             let idx = app
@@ -287,7 +292,7 @@ impl App {
         self.modal = Some(Modal::Confirm {
             title: "Install?".into(),
             lines,
-            action: Action::Install,
+            action: ConfirmAction::Install,
         });
     }
 
@@ -395,7 +400,7 @@ impl App {
         self.modal = Some(Modal::Confirm {
             title: "Roll back?".into(),
             lines,
-            action: Action::Rollback {
+            action: ConfirmAction::Rollback {
                 folder,
                 backup: latest,
             },
@@ -484,106 +489,109 @@ impl App {
             self.handle_modal_key(key);
             return;
         }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('c') if ctrl => self.should_quit = true,
-            KeyCode::Char('?') => self.modal = Some(Modal::Help),
-            KeyCode::Tab => {
+        if let Some(action) = self.keys.global_action(&key) {
+            self.handle_global(action);
+            return;
+        }
+        let nav = self.keys.nav_action(&key);
+        match self.focus {
+            Focus::Browser => self.handle_browser_key(nav),
+            Focus::Installs => self.handle_installs_key(nav),
+            Focus::Addons => self.handle_addons_key(nav),
+        }
+    }
+
+    fn handle_global(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::Help => self.modal = Some(Modal::Help { scroll: 0 }),
+            Action::NextPanel => {
                 self.focus = match self.focus {
                     Focus::Browser => Focus::Installs,
                     Focus::Installs => Focus::Addons,
                     Focus::Addons => Focus::Browser,
                 }
             }
-            KeyCode::BackTab => {
+            Action::PrevPanel => {
                 self.focus = match self.focus {
                     Focus::Browser => Focus::Addons,
                     Focus::Installs => Focus::Browser,
                     Focus::Addons => Focus::Installs,
                 }
             }
-            KeyCode::Char('1') => self.focus = Focus::Browser,
-            KeyCode::Char('2') => self.focus = Focus::Installs,
-            KeyCode::Char('3') => self.focus = Focus::Addons,
-            KeyCode::Char('R') | KeyCode::F(5) => {
+            Action::PanelBrowser => self.focus = Focus::Browser,
+            Action::PanelInstalls => self.focus = Focus::Installs,
+            Action::PanelAddons => self.focus = Focus::Addons,
+            Action::Refresh => {
                 self.browser.reload();
                 self.refresh_installs();
                 self.request_preview();
                 self.status = "Refreshed.".into();
             }
-            KeyCode::Char('b') => {
+            Action::ToggleBackups => {
                 self.config.backups = !self.config.backups;
                 self.status = format!("Backups {}", if self.config.backups { "ON" } else { "OFF" });
             }
-            KeyCode::Char('f') => {
+            Action::ToggleFilter => {
                 self.config.filter_browser = !self.config.filter_browser;
                 self.browser.filter = self.config.filter_browser;
                 self.browser.reload();
             }
-            KeyCode::Char('g') => {
+            Action::GoTo => {
                 self.modal = Some(Modal::Input {
                     title: "Go to folder".into(),
                     value: self.browser.cwd.display().to_string(),
                     action: InputAction::GoTo,
                 })
             }
-            KeyCode::Char('a') => {
+            Action::AddRoot => {
                 self.modal = Some(Modal::Input {
                     title: "Add World of Warcraft folder".into(),
                     value: String::new(),
                     action: InputAction::AddRoot,
                 })
             }
-            KeyCode::Char('i') => self.begin_install(),
-            KeyCode::Char('u') => {
-                if self.focus == Focus::Addons || self.focus == Focus::Installs {
+            Action::Install => self.begin_install(),
+            Action::Uninstall => {
+                if self.focus != Focus::Browser {
                     self.focus = Focus::Addons;
                     self.begin_uninstall();
                 }
             }
-            KeyCode::Char('r') => {
-                if self.focus != Focus::Browser {
-                    self.begin_rollback();
-                }
-            }
-            _ => match self.focus {
-                Focus::Browser => self.handle_browser_key(key),
-                Focus::Installs => self.handle_installs_key(key),
-                Focus::Addons => self.handle_addons_key(key),
-            },
+            Action::Rollback if self.focus != Focus::Browser => self.begin_rollback(),
+            _ => {}
         }
     }
 
-    fn handle_browser_key(&mut self, key: event::KeyEvent) {
-        let moved = match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
+    fn handle_browser_key(&mut self, nav: Option<Action>) {
+        let moved = match nav {
+            Some(Action::Up) => {
                 self.browser.move_by(-1);
                 true
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            Some(Action::Down) => {
                 self.browser.move_by(1);
                 true
             }
-            KeyCode::PageUp => {
+            Some(Action::PageUp) => {
                 self.browser.move_by(-15);
                 true
             }
-            KeyCode::PageDown => {
+            Some(Action::PageDown) => {
                 self.browser.move_by(15);
                 true
             }
-            KeyCode::Home => {
+            Some(Action::First) => {
                 self.browser.first();
                 true
             }
-            KeyCode::End => {
+            Some(Action::Last) => {
                 self.browser.last();
                 true
             }
-            KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => self.browser.up(),
-            KeyCode::Right | KeyCode::Char('l') => self.browser.enter(),
-            KeyCode::Enter => {
+            Some(Action::Back) => self.browser.up(),
+            Some(Action::Forward) => self.browser.enter(),
+            Some(Action::Select) => {
                 let is_addon_like = self.browser.selected().is_some_and(|e| {
                     matches!(e.kind, browser::Kind::Zip | browser::Kind::AddonDir)
                 });
@@ -601,36 +609,38 @@ impl App {
         }
     }
 
-    fn handle_installs_key(&mut self, key: event::KeyEvent) {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.select_install_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.select_install_by(1),
-            KeyCode::Char(' ') => {
+    fn handle_installs_key(&mut self, nav: Option<Action>) {
+        match nav {
+            Some(Action::Up) => self.select_install_by(-1),
+            Some(Action::Down) => self.select_install_by(1),
+            Some(Action::First) => self.select_install_by(-(self.installs.len() as isize)),
+            Some(Action::Last) => self.select_install_by(self.installs.len() as isize),
+            Some(Action::Mark) => {
                 if let Some(i) = self.install_state.selected()
                     && !self.marked.remove(&i)
                 {
                     self.marked.insert(i);
                 }
             }
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Addons,
+            Some(Action::Select) | Some(Action::Forward) => self.focus = Focus::Addons,
             _ => {}
         }
     }
 
-    fn handle_addons_key(&mut self, key: event::KeyEvent) {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.select_addon_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.select_addon_by(1),
-            KeyCode::PageUp => self.select_addon_by(-15),
-            KeyCode::PageDown => self.select_addon_by(15),
-            KeyCode::Home => self.addon_state.select(if self.addons.is_empty() {
+    fn handle_addons_key(&mut self, nav: Option<Action>) {
+        match nav {
+            Some(Action::Up) => self.select_addon_by(-1),
+            Some(Action::Down) => self.select_addon_by(1),
+            Some(Action::PageUp) => self.select_addon_by(-15),
+            Some(Action::PageDown) => self.select_addon_by(15),
+            Some(Action::First) => self.addon_state.select(if self.addons.is_empty() {
                 None
             } else {
                 Some(0)
             }),
-            KeyCode::End => self.addon_state.select(self.addons.len().checked_sub(1)),
-            KeyCode::Enter => self.show_addon_details(),
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Installs,
+            Some(Action::Last) => self.addon_state.select(self.addons.len().checked_sub(1)),
+            Some(Action::Select) => self.show_addon_details(),
+            Some(Action::Back) => self.focus = Focus::Installs,
             _ => {}
         }
     }
@@ -640,21 +650,44 @@ impl App {
             return;
         };
         match modal {
-            Modal::Help | Modal::Message { .. } => {
+            Modal::Help { scroll } => match self.keys.nav_action(&key) {
+                Some(Action::Up) => {
+                    self.modal = Some(Modal::Help {
+                        scroll: scroll.saturating_sub(1),
+                    })
+                }
+                Some(Action::Down) => {
+                    self.modal = Some(Modal::Help {
+                        scroll: scroll.saturating_add(1),
+                    })
+                }
+                Some(Action::PageUp) => {
+                    self.modal = Some(Modal::Help {
+                        scroll: scroll.saturating_sub(10),
+                    })
+                }
+                Some(Action::PageDown) => {
+                    self.modal = Some(Modal::Help {
+                        scroll: scroll.saturating_add(10),
+                    })
+                }
+                _ => {
+                    // any other key closes
+                }
+            },
+            Modal::Message { .. } => {
                 // any key closes
             }
             Modal::Confirm {
                 title,
                 lines,
                 action,
-            } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => match action {
-                    Action::Install => self.do_install(),
-                    Action::Rollback { folder, backup } => self.do_rollback(folder, backup),
+            } => match self.keys.modal_action(&key) {
+                Some(Action::Confirm) => match action {
+                    ConfirmAction::Install => self.do_install(),
+                    ConfirmAction::Rollback { folder, backup } => self.do_rollback(folder, backup),
                 },
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
-                    self.status = "Cancelled.".into()
-                }
+                Some(Action::Cancel) => self.status = "Cancelled.".into(),
                 _ => {
                     self.modal = Some(Modal::Confirm {
                         title,
@@ -667,14 +700,10 @@ impl App {
                 lines,
                 paths,
                 backup,
-            } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                    self.do_uninstall(paths, backup)
-                }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
-                    self.status = "Cancelled.".into()
-                }
-                KeyCode::Char(' ') | KeyCode::Char('b') | KeyCode::Tab => {
+            } => match self.keys.modal_action(&key) {
+                Some(Action::Confirm) => self.do_uninstall(paths, backup),
+                Some(Action::Cancel) => self.status = "Cancelled.".into(),
+                Some(Action::Toggle) => {
                     self.modal = Some(Modal::Uninstall {
                         lines,
                         paths,
@@ -751,8 +780,15 @@ impl App {
 }
 
 pub fn run(config: Config) -> Result<()> {
+    let (keys, warnings) = Keymap::load();
     let mut terminal = ratatui::init();
-    let mut app = App::new(config);
+    let mut app = App::new(config, keys);
+    if !warnings.is_empty() {
+        app.modal = Some(Modal::Message {
+            title: "Key bindings".into(),
+            lines: warnings,
+        });
+    }
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
     app.config.browse_dir = Some(app.browser.cwd.clone());
@@ -786,6 +822,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyModifiers;
     use std::fs;
 
     /// Build a fake WoW root + a zip and render the app headlessly.
@@ -828,7 +865,7 @@ wow
             backups: true,
             filter_browser: true,
         };
-        let mut app = App::new(config);
+        let mut app = App::new(config, Keymap::default());
         // Point at our fake install explicitly (the machine may have real ones).
         let idx = app
             .installs
@@ -909,7 +946,7 @@ wow
             backups: true,
             filter_browser: true,
         };
-        let mut app = App::new(config);
+        let mut app = App::new(config, Keymap::default());
         let idx = app
             .installs
             .iter()
@@ -963,6 +1000,66 @@ wow
         // covered by 'u' not having opened a rollback dialog above.
         app.handle_key(event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn custom_keymap_drives_actions_and_hints() {
+        let temp = crate::package::TempDir::new().unwrap();
+        let wow = temp.path.join("World of Warcraft").join("_retail_");
+        let addon_dir = wow.join("Interface").join("AddOns").join("Thing");
+        fs::create_dir_all(&addon_dir).unwrap();
+        fs::write(wow.join(".flavor.info"), "Product Flavor!STRING:0\nwow\n").unwrap();
+        fs::write(addon_dir.join("Thing.toc"), "## Title: Thing\n").unwrap();
+
+        let config = Config {
+            wow_roots: vec![temp.path.join("World of Warcraft")],
+            browse_dir: Some(temp.path.clone()),
+            last_flavor: None,
+            backups: true,
+            filter_browser: true,
+        };
+        let keys = Keymap::parse("uninstall = [\"x\"]\nrollback = [\"Ctrl-z\"]\nhelp = [\"F1\"]\n")
+            .unwrap();
+        let mut app = App::new(config, keys);
+        let idx = app
+            .installs
+            .iter()
+            .position(|i| i.path == wow)
+            .expect("fake install detected");
+        app.install_state.select(Some(idx));
+        app.refresh_addons();
+        app.focus = Focus::Addons;
+
+        // Status bar and help show the configured keys, not the defaults.
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("x uninstall"), "{text}");
+        assert!(text.contains("Ctrl-z rollback"), "{text}");
+        assert!(text.contains("F1 help"), "{text}");
+
+        // The old key does nothing; the new one opens the dialog.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert!(app.modal.is_none());
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(app.modal, Some(Modal::Uninstall { .. })));
+        app.handle_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.modal.is_none());
+
+        // '?' no longer opens help, F1 does, and the help lists the bindings.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(app.modal.is_none());
+        app.handle_key(event::KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("uninstall the selected addon"), "{text}");
+        let line = text
+            .lines()
+            .find(|l| l.contains("uninstall the selected addon"))
+            .unwrap();
+        assert!(line.contains(" x "), "{line}");
     }
 
     fn buffer_text(backend: &TestBackend) -> String {

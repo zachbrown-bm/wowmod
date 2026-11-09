@@ -2,6 +2,7 @@ mod addon;
 mod config;
 mod flavor;
 mod installer;
+mod keymap;
 mod package;
 mod toc;
 mod ui;

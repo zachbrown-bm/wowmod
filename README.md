@@ -37,7 +37,7 @@ Settings persist in `%APPDATA%\wowmod\config.toml`.
 
 ## Keys
 
-Press `?` in the app for the full list.
+Press `?` in the app for the full list. The defaults are below.
 
 | Key | Action |
 |---|---|
@@ -54,6 +54,27 @@ Press `?` in the app for the full list.
 | R / F5 | refresh |
 | q | quit |
 
+### Changing keys
+
+The first run writes `%APPDATA%\wowmod\wowmod.config` with every action and
+its default keys. Edit the lists there and restart; the status bar, dialog
+footers and help screen all show whatever you configured. Remove an action
+to get its default back, or set it to `[]` to unbind it. The app never
+rewrites the file, so comments survive.
+
+```toml
+# uninstall with Delete, roll back with Ctrl-z
+uninstall = ["Del"]
+rollback = ["Ctrl-z"]
+```
+
+Single characters are case-sensitive (`r` and `R` differ). Named keys:
+`Enter Esc Tab Shift-Tab Space Up Down Left Right PgUp PgDn Home End
+Backspace Del Ins F1..F12`; modifiers `Ctrl-x` and `Alt-x`. Global actions
+(quit, install, uninstall, ...) are checked before panel navigation, and a
+key bound to two actions is reported in a dialog at startup. A file that
+cannot be parsed is reported the same way and the defaults are used.
+
 ## Layout
 
 ```
@@ -65,6 +86,7 @@ src/addon.rs       scanning + grouping installed addons, enable state
 src/package.rs     zip extraction + addon root detection
 src/installer.rs   copy/backup/uninstall/rollback
 src/config.rs      persisted settings
+src/keymap.rs      configurable key bindings (wowmod.config)
 src/ui/            ratatui app, browser, rendering
 ```
 
@@ -156,5 +178,5 @@ logout, so do this only while the game is not running.
   the paste handler can treat a path ending in `.zip` as "install this").
 - Watch the Downloads folder and offer to install a newly finished zip.
 - Open the addon's folder or project page from the details dialog.
-- Theme and keybinding configuration in `config.toml`.
+- Theme configuration.
 - Package for `cargo install`, winget, and a portable zip.

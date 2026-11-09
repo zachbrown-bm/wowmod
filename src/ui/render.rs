@@ -345,8 +345,8 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let keys = match app.focus {
         Focus::Browser => "Enter/i install  ←/Bksp up  →/Enter open  g go to  f filter",
-        Focus::Installs => "Space mark  Enter addons  d uninstall  u rollback",
-        Focus::Addons => "Enter details  d uninstall  u rollback",
+        Focus::Installs => "Space mark  Enter addons  u uninstall  r rollback",
+        Focus::Addons => "Enter details  u uninstall  r rollback",
     };
     let backups = if app.config.backups {
         "backups on"
@@ -414,6 +414,28 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                 .collect(),
             " y / Enter confirm    n / Esc cancel ",
         ),
+        Modal::Uninstall { lines, backup, .. } => {
+            let mut out: Vec<Line> = lines.iter().map(|l| Line::from(l.clone())).collect();
+            out.push(Line::from(""));
+            out.push(Line::from(vec![
+                Span::styled(
+                    if *backup { "[x] " } else { "[ ] " },
+                    Style::default().fg(ACCENT).bold(),
+                ),
+                Span::raw("Back up folders to AddOns.wowmod-backup first"),
+            ]));
+            out.push(if *backup {
+                Line::from("    Folders are moved to the backup folder and can be rolled back.")
+                    .fg(DIM)
+            } else {
+                Line::from("    ! Folders are deleted permanently.").fg(Color::Red)
+            });
+            (
+                "Uninstall?".into(),
+                out,
+                " Space toggle backup    y / Enter uninstall    n / Esc cancel ",
+            )
+        }
         Modal::Input { title, value, .. } => (
             title.clone(),
             vec![
@@ -465,14 +487,15 @@ Browser (left)
 
 WoW installs / installed addons (right)
   Space             mark extra install targets (install to several flavors)
-  Enter             show addon details    d / Del   uninstall selected addon
-  u                 roll back selected addon to its newest backup
+  Enter             show addon details    u   uninstall selected addon
+  r                 roll back selected addon to its newest backup
   a                 add a World of Warcraft folder that was not detected
 
 General
-  r / F5            refresh everything    b   toggle backups on replace/uninstall
+  R / F5            refresh everything    b   toggle backups on replace/uninstall
   ?                 this help             q / Esc   quit
 
+The uninstall dialog has a back-up-first checkbox (Space) preset from the b setting.
 Backups live in <flavor>\\Interface\\AddOns.wowmod-backup\\<Folder>-<timestamp>.
 Zips are extracted to a temp folder; the addon root is the folder holding
 <Name>.toc, even if the zip wraps it in another folder (GitHub style).";

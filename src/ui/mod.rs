@@ -44,11 +44,16 @@ pub enum Modal {
         title: String,
         lines: Vec<String>,
     },
+    /// Uninstall confirmation with a "back up first" checkbox.
+    Uninstall {
+        lines: Vec<String>,
+        paths: Vec<PathBuf>,
+        backup: bool,
+    },
 }
 
 pub enum Action {
     Install,
-    Uninstall(Vec<PathBuf>),
     Rollback { folder: String, backup: PathBuf },
 }
 
@@ -335,29 +340,27 @@ impl App {
             lines.push(format!("  {n}"));
         }
         lines.push(String::new());
-        lines.push(if self.config.backups {
-            "Folders are moved to AddOns.wowmod-backup.".into()
-        } else {
-            "Backups are OFF: folders are deleted.".into()
-        });
         lines.push("SavedVariables in WTF are left untouched.".into());
-        self.modal = Some(Modal::Confirm {
-            title: "Uninstall?".into(),
+        self.modal = Some(Modal::Uninstall {
             lines,
-            action: Action::Uninstall(paths),
+            paths,
+            backup: self.config.backups,
         });
     }
 
-    fn do_uninstall(&mut self, paths: Vec<PathBuf>) {
+    fn do_uninstall(&mut self, paths: Vec<PathBuf>, backup: bool) {
         let Some(install) = self.current_install().cloned() else {
             return;
         };
-        let opts = installer::Options {
-            backups: self.config.backups,
-        };
+        let opts = installer::Options { backups: backup };
         match installer::uninstall(&install, &paths, &opts) {
             Ok(_) => {
-                self.status = format!("Removed {} folder(s) from {}", paths.len(), install.label())
+                self.status = format!(
+                    "Removed {} folder(s) from {}{}",
+                    paths.len(),
+                    install.label(),
+                    if backup { " (backed up)" } else { "" }
+                )
             }
             Err(e) => self.status = format!("Uninstall failed: {e:#}"),
         }
@@ -503,7 +506,7 @@ impl App {
             KeyCode::Char('1') => self.focus = Focus::Browser,
             KeyCode::Char('2') => self.focus = Focus::Installs,
             KeyCode::Char('3') => self.focus = Focus::Addons,
-            KeyCode::Char('r') | KeyCode::F(5) => {
+            KeyCode::Char('R') | KeyCode::F(5) => {
                 self.browser.reload();
                 self.refresh_installs();
                 self.request_preview();
@@ -533,13 +536,13 @@ impl App {
                 })
             }
             KeyCode::Char('i') => self.begin_install(),
-            KeyCode::Char('d') | KeyCode::Delete => {
+            KeyCode::Char('u') => {
                 if self.focus == Focus::Addons || self.focus == Focus::Installs {
                     self.focus = Focus::Addons;
                     self.begin_uninstall();
                 }
             }
-            KeyCode::Char('u') => {
+            KeyCode::Char('r') => {
                 if self.focus != Focus::Browser {
                     self.begin_rollback();
                 }
@@ -647,7 +650,6 @@ impl App {
             } => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => match action {
                     Action::Install => self.do_install(),
-                    Action::Uninstall(paths) => self.do_uninstall(paths),
                     Action::Rollback { folder, backup } => self.do_rollback(folder, backup),
                 },
                 KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
@@ -658,6 +660,32 @@ impl App {
                         title,
                         lines,
                         action,
+                    })
+                }
+            },
+            Modal::Uninstall {
+                lines,
+                paths,
+                backup,
+            } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.do_uninstall(paths, backup)
+                }
+                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.status = "Cancelled.".into()
+                }
+                KeyCode::Char(' ') | KeyCode::Char('b') | KeyCode::Tab => {
+                    self.modal = Some(Modal::Uninstall {
+                        lines,
+                        paths,
+                        backup: !backup,
+                    })
+                }
+                _ => {
+                    self.modal = Some(Modal::Uninstall {
+                        lines,
+                        paths,
+                        backup,
                     })
                 }
             },
@@ -852,6 +880,89 @@ wow
                 .is_file()
         );
         assert_eq!(app.addons.len(), 2);
+    }
+
+    #[test]
+    fn uninstall_dialog_toggles_backup_and_removes_folder() {
+        let temp = crate::package::TempDir::new().unwrap();
+        let wow = temp.path.join("World of Warcraft").join("_retail_");
+        let addon_dir = wow.join("Interface").join("AddOns").join("Gone");
+        fs::create_dir_all(&addon_dir).unwrap();
+        fs::write(
+            wow.join(".flavor.info"),
+            "Product Flavor!STRING:0
+wow
+",
+        )
+        .unwrap();
+        fs::write(
+            addon_dir.join("Gone.toc"),
+            "## Title: Gone
+",
+        )
+        .unwrap();
+
+        let config = Config {
+            wow_roots: vec![temp.path.join("World of Warcraft")],
+            browse_dir: Some(temp.path.clone()),
+            last_flavor: None,
+            backups: true,
+            filter_browser: true,
+        };
+        let mut app = App::new(config);
+        let idx = app
+            .installs
+            .iter()
+            .position(|i| i.path == wow)
+            .expect("fake install detected");
+        app.install_state.select(Some(idx));
+        app.refresh_addons();
+        assert_eq!(app.addons.len(), 1);
+        app.focus = Focus::Addons;
+
+        // 'u' opens the uninstall dialog with the checkbox preset from config.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Uninstall { backup: true, .. })
+        ));
+
+        // Space toggles it off, and the dialog shows the unchecked box.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Uninstall { backup: false, .. })
+        ));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("[ ] Back up folders"));
+        assert!(text.contains("deleted permanently"));
+
+        // Toggle back on, confirm, and the folder should be in the backup dir.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        assert!(buffer_text(terminal.backend()).contains("[x] Back up folders"));
+        app.handle_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modal.is_none());
+        assert!(!addon_dir.exists());
+        assert_eq!(app.addons.len(), 0);
+        let backups: Vec<_> = fs::read_dir(installer::backup_dir(&app.installs[idx]))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0].path().join("Gone.toc").is_file());
+        assert!(app.status.contains("backed up"));
+
+        // 'r' now means rollback: it restores the backup.
+        app.refresh_addons();
+        assert!(app.addons.is_empty());
+        // Rollback needs a selected addon, so no-op here; the rebinding itself is
+        // covered by 'u' not having opened a rollback dialog above.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(app.modal.is_none());
     }
 
     fn buffer_text(backend: &TestBackend) -> String {

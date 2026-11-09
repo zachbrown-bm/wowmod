@@ -26,10 +26,11 @@ wowmod install DBM.zip --flavor wowf
 - Right panel lists installs and the addons in the selected one, grouped into
   logical addons (shared `X-Curse-Project-ID` or dependency + name prefix),
   with version and enabled state read from `WTF\...\AddOns.txt`.
-- Install (`Enter`/`i`), uninstall (`d`), roll back to the newest backup (`u`).
+- Install (`Enter`/`i`), uninstall (`u`), roll back to the newest backup (`r`).
   Replaced or removed folders are moved to
   `<flavor>\Interface\AddOns.wowmod-backup\<Folder>-<timestamp>` unless
-  backups are turned off with `b`.
+  backups are turned off with `b`. The uninstall dialog has a "back up first"
+  checkbox (toggle with `Space`) that starts from the `b` setting.
 - `Space` marks extra installs so one zip goes to several flavors at once.
 
 Settings persist in `%APPDATA%\wowmod\config.toml`.
@@ -46,11 +47,11 @@ Press `?` in the app for the full list.
 | g | type a folder path to browse |
 | f | show all files, not just zips and folders |
 | Space | mark extra install targets |
-| d / Del | uninstall selected addon |
-| u | roll back selected addon to its newest backup |
+| u | uninstall selected addon (confirmation has a backup checkbox) |
+| r | roll back selected addon to its newest backup |
 | a | add a World of Warcraft folder that was not detected |
 | b | toggle backups |
-| r / F5 | refresh |
+| R / F5 | refresh |
 | q | quit |
 
 ## Layout

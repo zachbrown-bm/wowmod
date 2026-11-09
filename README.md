@@ -9,6 +9,22 @@ wowmod list                    # print detected installs and their addons
 wowmod install DBM.zip --flavor wowf
 ```
 
+## Installing
+
+You need Rust ([rustup.rs](https://rustup.rs)). Then, from a clone of this
+repo:
+
+```
+.\install.ps1        # Windows (PowerShell)
+./install.sh         # macOS / Linux
+```
+
+Both run `cargo install --path . --locked`, which builds a release binary and
+copies it to Cargo's bin directory (`%USERPROFILE%\.cargo\bin`, or
+`$CARGO_HOME\bin`). rustup puts that directory on your `PATH`, so `wowmod`
+then works from any terminal. The script warns if it is not on `PATH`.
+Re-run the script after pulling to upgrade; `cargo uninstall wowmod` removes it.
+
 ## What it does
 
 - Detects every WoW flavor on the machine (`_retail_`, `_forever_`, `_ptr_`,
@@ -193,4 +209,4 @@ logout, so do this only while the game is not running.
 - Watch the Downloads folder and offer to install a newly finished zip.
 - Open the addon's folder or project page from the details dialog.
 - Theme configuration.
-- Package for `cargo install`, winget, and a portable zip.
+- Package for winget and a portable zip (`cargo install` works today via `install.ps1` / `install.sh`).

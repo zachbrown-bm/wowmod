@@ -10,7 +10,7 @@ use super::browser::Kind;
 use super::{App, Focus, Modal};
 use crate::addon;
 use crate::flavor::interface_to_version;
-use crate::keymap::{Action, Keymap};
+use crate::keymap::Action;
 
 const ACCENT: Color = Color::Yellow;
 const DIM: Color = Color::DarkGray;
@@ -449,7 +449,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
         Modal::Help { scroll: s } => {
             scroll = *s;
             (
-                "Help".into(),
+                format!("Help - v{}", env!("CARGO_PKG_VERSION")),
                 help_lines(app),
                 hints(
                     app,
@@ -572,26 +572,15 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
 fn help_lines(app: &App) -> Vec<Line<'static>> {
     let km = &app.keys;
     let mut out: Vec<Line> = Vec::new();
-    match Keymap::path() {
-        Some(p) => {
-            out.push(Line::from(format!("Keys are set in {}", p.display())));
-            out.push(Line::from(
-                "Edit the file and restart wowmod to apply changes.",
-            ));
-        }
-        None => out.push(Line::from("Default keys (no config directory found).")),
-    }
-    out.push(Line::from(format!(
-        "Key names are drawn in key_color from config.toml (now {}).",
-        app.config.key_color
-    )));
     let sections: [(&str, &[Action]); 3] = [
         ("Global", Action::GLOBAL),
         ("Navigation inside the focused panel", Action::NAV),
         ("Dialogs", Action::MODAL),
     ];
     for (title, actions) in sections {
-        out.push(Line::from(""));
+        if !out.is_empty() {
+            out.push(Line::from(""));
+        }
         out.push(Line::from(Span::styled(title, Style::default().bold())));
         for &a in actions {
             out.push(Line::from(vec![

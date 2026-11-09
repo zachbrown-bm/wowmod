@@ -380,10 +380,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let k = |a: Action| app.keys.short(a);
     let left_pairs: Vec<(String, &str)> = match app.focus {
         Focus::Browser => vec![
-            (
-                format!("{}/{}", k(Action::Select), k(Action::Install)),
-                "install",
-            ),
+            (k(Action::Install), "install"),
+            (k(Action::Select), "details"),
             (k(Action::Back), "up"),
             (k(Action::Forward), "open"),
             (k(Action::GoTo), "go to"),

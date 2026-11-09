@@ -478,34 +478,7 @@ impl App {
         };
         let mut lines = vec![format!("Folder:  {}", a.primary.path.display())];
         if let Some(t) = &a.primary.toc {
-            if let Some(v) = &t.author {
-                lines.push(format!("Author:  {v}"));
-            }
-            if let Some(v) = &t.version {
-                lines.push(format!("Version: {v}"));
-            }
-            if !t.interface.is_empty() {
-                lines.push(format!(
-                    "Interface: {}",
-                    t.interface
-                        .iter()
-                        .map(|i| format!("{i} ({})", crate::flavor::interface_to_version(*i)))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            if let Some(v) = &t.notes {
-                lines.push(format!("Notes:   {v}"));
-            }
-            if !t.dependencies.is_empty() {
-                lines.push(format!("Requires: {}", t.dependencies.join(", ")));
-            }
-            if !t.optional_deps.is_empty() {
-                lines.push(format!("Optional: {}", t.optional_deps.join(", ")));
-            }
-            for (k, v) in &t.extra {
-                lines.push(format!("{k}: {v}"));
-            }
+            lines.extend(toc_detail_lines(t));
         }
         if !a.members.is_empty() {
             lines.push(String::new());
@@ -531,6 +504,71 @@ impl App {
             title: a.title(),
             lines,
         });
+    }
+
+    /// Details of the zip or addon folder selected in the browser, laid out
+    /// like `show_addon_details` so both panels read the same way. Uses the
+    /// background analysis that the preview pane already requested.
+    fn show_package_details(&mut self) {
+        let Some(entry) = self.browser.selected() else {
+            return;
+        };
+        if self.preview_pending {
+            self.status = format!("Still analysing {} ...", entry.name);
+            return;
+        }
+        let Some(preview) = &self.preview else {
+            return;
+        };
+        let pkg = match &preview.result {
+            Ok(p) => p,
+            Err(e) => {
+                self.modal = Some(Modal::Message {
+                    title: entry.name.clone(),
+                    lines: vec![e.clone()],
+                });
+                return;
+            }
+        };
+        let Some(primary) = pkg.roots.first() else {
+            return;
+        };
+        let title = primary
+            .toc
+            .title
+            .clone()
+            .unwrap_or_else(|| primary.name.clone());
+        let mut lines = vec![
+            format!("Source:  {}", pkg.source.display()),
+            format!("Folder:  {}", primary.name),
+        ];
+        lines.extend(toc_detail_lines(&primary.toc));
+        if pkg.roots.len() > 1 {
+            lines.push(String::new());
+            lines.push("Member folders:".into());
+            for r in &pkg.roots[1..] {
+                lines.push(format!(
+                    "  {}  {}",
+                    r.name,
+                    r.toc.version.clone().unwrap_or_default()
+                ));
+            }
+        }
+        // Dependencies the package does not bring and the target install lacks.
+        let mut have = addon::folder_name_set(&self.addons);
+        have.extend(pkg.roots.iter().map(|r| r.name.clone()));
+        let missing: Vec<&str> = pkg
+            .roots
+            .iter()
+            .flat_map(|r| r.toc.dependencies.iter())
+            .filter(|d| !have.iter().any(|h| h.eq_ignore_ascii_case(d)))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("Missing dependencies: {}", missing.join(", ")));
+        }
+        self.modal = Some(Modal::Message { title, lines });
     }
 
     // ----- mouse handling ------------------------------------------------
@@ -664,7 +702,7 @@ impl App {
                     matches!(e.kind, browser::Kind::Zip | browser::Kind::AddonDir)
                 });
                 if is_addon_like {
-                    self.begin_install();
+                    self.show_package_details();
                     false
                 } else {
                     self.browser.enter()
@@ -847,6 +885,41 @@ impl App {
     }
 }
 
+/// The TOC fields shown in a details dialog, shared by the installed-addon
+/// and the browser (zip / folder) dialogs.
+fn toc_detail_lines(t: &crate::toc::Toc) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(v) = &t.author {
+        lines.push(format!("Author:  {v}"));
+    }
+    if let Some(v) = &t.version {
+        lines.push(format!("Version: {v}"));
+    }
+    if !t.interface.is_empty() {
+        lines.push(format!(
+            "Interface: {}",
+            t.interface
+                .iter()
+                .map(|i| format!("{i} ({})", crate::flavor::interface_to_version(*i)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some(v) = &t.notes {
+        lines.push(format!("Notes:   {v}"));
+    }
+    if !t.dependencies.is_empty() {
+        lines.push(format!("Requires: {}", t.dependencies.join(", ")));
+    }
+    if !t.optional_deps.is_empty() {
+        lines.push(format!("Optional: {}", t.optional_deps.join(", ")));
+    }
+    for (k, v) in &t.extra {
+        lines.push(format!("{k}: {v}"));
+    }
+    lines
+}
+
 pub fn run(config: Config) -> Result<()> {
     let (keys, mut warnings) = Keymap::load();
     let mut terminal = ratatui::init();
@@ -981,8 +1054,24 @@ wow
         assert!(text.contains("SomeAddon"));
         assert!(text.contains("no Interface version for Retail"));
 
-        // Open the install confirmation and render it too.
+        // Enter on the addon folder shows its details, not an install prompt.
         app.focus = Focus::Browser;
+        app.handle_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match &app.modal {
+            Some(Modal::Message { title, lines }) => {
+                assert_eq!(title, "Some Addon");
+                let joined = lines.join("\n");
+                assert!(joined.contains("Folder:  SomeAddon"), "{joined}");
+                assert!(joined.contains("Version: 9"), "{joined}");
+                assert!(joined.contains("Interface: 16001"), "{joined}");
+            }
+            _ => panic!("expected details dialog"),
+        }
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        assert!(buffer_text(terminal.backend()).contains("Version: 9"));
+        app.modal = None;
+
+        // Open the install confirmation and render it too.
         app.begin_install();
         assert!(matches!(app.modal, Some(Modal::Confirm { .. })));
         terminal.draw(|f| render::draw(f, &mut app)).unwrap();

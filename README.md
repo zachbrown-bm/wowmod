@@ -78,7 +78,8 @@ git push origin v0.1.0
 - Right panel lists installs and the addons in the selected one, grouped into
   logical addons (shared `X-Curse-Project-ID` or dependency + name prefix),
   with version and enabled state read from `WTF\...\AddOns.txt`.
-- Install (`Enter`/`i`), uninstall (`u`), roll back to the newest backup (`r`).
+- Install (`i`), uninstall (`u`), roll back to the newest backup (`r`). `Enter`
+  on a zip or addon folder shows the same details dialog as an installed addon.
   Replaced or removed folders are moved to
   `<flavor>\Interface\AddOns.wowmod-backup\<Folder>-<timestamp>` unless
   backups are turned off with `b`. The uninstall dialog has a "back up first"
@@ -110,7 +111,8 @@ on a panel focuses it as well. Because the app captures the mouse, hold
 | Key | Action |
 |---|---|
 | Tab / 1 2 3 | switch panel |
-| Enter / i | install selected zip or addon folder |
+| i | install selected zip or addon folder |
+| Enter | open folder, or show details of the selected zip / addon folder |
 | ← Backspace / → | parent folder / open folder |
 | g | type a folder path to browse |
 | f | show all files, not just zips and folders |

@@ -89,6 +89,7 @@ pub enum Modal {
 pub enum ConfirmAction {
     Install,
     Rollback { folder: String, backup: PathBuf },
+    Quit,
 }
 
 pub enum InputAction {
@@ -506,6 +507,15 @@ impl App {
         });
     }
 
+    /// Ask before leaving. Settings are saved on the way out either way.
+    fn begin_quit(&mut self) {
+        self.modal = Some(Modal::Confirm {
+            title: "Quit?".into(),
+            lines: vec!["Exit wowmod?".into()],
+            action: ConfirmAction::Quit,
+        });
+    }
+
     /// Details of the zip or addon folder selected in the browser, laid out
     /// like `show_addon_details` so both panels read the same way. Uses the
     /// background analysis that the preview pane already requested.
@@ -609,7 +619,7 @@ impl App {
 
     fn handle_global(&mut self, action: Action) {
         match action {
-            Action::Quit => self.should_quit = true,
+            Action::Quit => self.begin_quit(),
             Action::Help => self.modal = Some(Modal::Help { scroll: 0 }),
             Action::NextPanel => {
                 self.focus = match self.focus {
@@ -798,6 +808,7 @@ impl App {
                 Some(Action::Confirm) => match action {
                     ConfirmAction::Install => self.do_install(),
                     ConfirmAction::Rollback { folder, backup } => self.do_rollback(folder, backup),
+                    ConfirmAction::Quit => self.should_quit = true,
                 },
                 Some(Action::Cancel) => self.status = "Cancelled.".into(),
                 _ => {
@@ -1297,6 +1308,51 @@ wow
             assert_eq!(buf[(x, 0)].fg, Color::Rgb(0x8a, 0x8a, 0x8a), "{key}");
             assert_eq!(buf[(x + 2, 0)].fg, Color::DarkGray, "{key}");
         }
+    }
+
+    #[test]
+    fn quitting_asks_first() {
+        let mut app = App::new(
+            Config {
+                wow_roots: Vec::new(),
+                browse_dir: Some(std::env::temp_dir()),
+                ..Config::default()
+            },
+            Keymap::default(),
+        );
+        let press = |app: &mut App, c: char| {
+            app.handle_key(event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+        };
+        press(&mut app, 'q');
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Confirm {
+                action: ConfirmAction::Quit,
+                ..
+            })
+        ));
+        assert!(!app.should_quit);
+        // Saying no keeps the app open.
+        press(&mut app, 'n');
+        assert!(app.modal.is_none());
+        assert!(!app.should_quit);
+        // Esc is bound to both Quit and Cancel: it opens the prompt, then closes it.
+        app.handle_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })));
+        app.handle_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.modal.is_none() && !app.should_quit);
+        // Saying yes quits.
+        press(&mut app, 'q');
+        press(&mut app, 'y');
+        assert!(app.should_quit);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        app.should_quit = false;
+        press(&mut app, 'q');
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("Quit?") && text.contains("Exit wowmod?"), "{text}");
     }
 
     #[test]

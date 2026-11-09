@@ -122,7 +122,7 @@ on a panel focuses it as well. Because the app captures the mouse, hold
 | a | add a World of Warcraft folder that was not detected |
 | b | toggle backups |
 | R / F5 | refresh |
-| q | quit |
+| q | quit (asks for confirmation) |
 
 ### Changing keys
 

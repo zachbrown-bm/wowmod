@@ -27,9 +27,17 @@ curl -fsSL https://raw.githubusercontent.com/zachbrown-bm/wowmod/main/install.sh
 
 This downloads the latest [GitHub release](https://github.com/zachbrown-bm/wowmod/releases),
 puts the binary in `%LOCALAPPDATA%\Programs\wowmod` (Windows) or `~/.local/bin`
-(macOS / Linux), and adds that folder to your `PATH` on Windows. Re-run to
-upgrade. From a clone you can also run `.\install.ps1 -Version v0.1.0` to pin a
-version. You can always grab the zip from the releases page by hand instead.
+(macOS / Linux), and adds that folder to your `PATH` on Windows (open a new
+terminal afterwards). On macOS / Linux the script warns if `~/.local/bin` is
+not on your `PATH`; add `export PATH="$HOME/.local/bin:$PATH"` to your shell
+profile. Re-run the same line to upgrade, and `wowmod --version` shows what is
+installed. From a clone you can also run `.\install.ps1 -Version v0.1.0` to
+pin a version. You can always grab the zip from the releases page by hand
+instead.
+
+To uninstall, delete the install folder and (on Windows) remove it from your
+user `PATH` under System Properties > Environment Variables. wowmod's own
+settings live in `%APPDATA%\wowmod` and are left alone.
 
 ### Developers
 

@@ -1132,6 +1132,16 @@ wow
         let x = row.find("u uninstall").unwrap() as u16;
         assert_eq!(buf[(x, y)].fg, Color::Rgb(0x8a, 0x8a, 0x8a));
         assert_eq!(buf[(x + 2, y)].fg, Color::DarkGray);
+
+        // Panel titles start with their hot key in the key color too.
+        let top: String = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        for key in ["1 Browse", "2 WoW installs"] {
+            let x = top.find(key).unwrap() as u16;
+            assert_eq!(buf[(x, 0)].fg, Color::Rgb(0x8a, 0x8a, 0x8a), "{key}");
+        }
     }
 
     fn buffer_text(backend: &TestBackend) -> String {

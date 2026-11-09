@@ -15,23 +15,30 @@ use crate::keymap::{Action, Keymap};
 const ACCENT: Color = Color::Yellow;
 const DIM: Color = Color::DarkGray;
 
-fn panel(title: &str, focused: bool) -> Block<'_> {
+/// A bordered panel whose title starts with the key that focuses it, drawn
+/// in the key color so it reads as a hot key.
+fn panel(app: &App, key: Action, title: &str, focused: bool) -> Block<'static> {
     let style = if focused {
         Style::default().fg(ACCENT)
     } else {
         Style::default().fg(DIM)
     };
+    let title_style = if focused {
+        Style::default().fg(ACCENT).bold()
+    } else {
+        Style::default()
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_style(style)
-        .title(Span::styled(
-            format!(" {title} "),
-            if focused {
-                Style::default().fg(ACCENT).bold()
-            } else {
-                Style::default()
-            },
-        ))
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                app.keys.short(key),
+                Style::default().fg(app.key_color).bold(),
+            ),
+            Span::styled(format!(" {title} "), title_style),
+        ]))
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -65,7 +72,7 @@ fn draw_left(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     let focused = app.focus == Focus::Browser;
-    let title = format!("1 Browse  {}", app.browser.cwd.display());
+    let title = format!("Browse  {}", app.browser.cwd.display());
     let items: Vec<ListItem> = app
         .browser
         .entries
@@ -90,7 +97,7 @@ fn draw_left(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let list = List::new(items)
-        .block(panel(&title, focused))
+        .block(panel(app, Action::PanelBrowser, &title, focused))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
     f.render_stateful_widget(list, parts[0], &mut app.browser.state);
@@ -251,7 +258,12 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let list = List::new(items)
         .block(panel(
-            "2 WoW installs  (Space marks extra targets)",
+            app,
+            Action::PanelInstalls,
+            &format!(
+                "WoW installs  ({} marks extra targets)",
+                app.keys.short(Action::Mark)
+            ),
             focused,
         ))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -261,8 +273,8 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     // Installed addons
     let focused = app.focus == Focus::Addons;
     let title = match app.current_install() {
-        Some(i) => format!("3 Installed in {}  ({})", i.label(), app.addons.len()),
-        None => "3 Installed".to_string(),
+        Some(i) => format!("Installed in {}  ({})", i.label(), app.addons.len()),
+        None => "Installed".to_string(),
     };
     let installed = addon::folder_name_set(&app.addons);
     let flavor = app.current_flavor().cloned();
@@ -323,7 +335,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let list = List::new(items)
-        .block(panel(&title, focused))
+        .block(panel(app, Action::PanelAddons, &title, focused))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
     f.render_stateful_widget(list, parts[1], &mut app.addon_state);

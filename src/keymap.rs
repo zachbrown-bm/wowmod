@@ -1,6 +1,6 @@
 //! User-configurable key bindings.
 //!
-//! Bindings live in `%APPDATA%\wowmod\wowmod.config` (TOML). The file is
+//! Bindings live in `%APPDATA%\wowmod\config\wowmod.config` (TOML). The file is
 //! written with the defaults the first time the app runs and is only ever
 //! read after that, so comments and edits survive. Every action maps to a
 //! list of keys; an action missing from the file keeps its default and an

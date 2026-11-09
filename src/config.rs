@@ -1,4 +1,4 @@
-//! Persistent settings in `%APPDATA%\wowmod\config.toml`.
+//! Persistent settings in `%APPDATA%\wowmod\config\config.toml`.
 
 use std::fs;
 use std::path::PathBuf;

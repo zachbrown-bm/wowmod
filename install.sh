@@ -48,6 +48,10 @@ else
         arm64|aarch64) arch=aarch64 ;;
         *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
     esac
+    if [ "$os" = macos ] && [ "$arch" = x86_64 ]; then
+        echo "No prebuilt binary for Intel Macs. Install Rust, then: cargo build --release && ./install.sh --local" >&2
+        exit 1
+    fi
     asset="wowmod-$os-$arch.tar.gz"
     if [ "$version" = latest ]; then
         url="https://github.com/$repo/releases/latest/download/$asset"

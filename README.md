@@ -53,7 +53,7 @@ Same install folder as the release build, so the dev build replaces it.
 
 ### Cutting a release
 
-Push a version tag and the `Release` workflow builds Windows, macOS and Linux
+Push a version tag and the `Release` workflow builds Windows, macOS (Apple Silicon) and Linux
 binaries and attaches them to a GitHub Release:
 
 ```

@@ -10,10 +10,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::style::Color;
 use ratatui::widgets::ListState;
 
 use crate::addon::{self, InstalledAddon};
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_KEY_COLOR};
 use crate::flavor::Flavor;
 use crate::installer;
 use crate::keymap::{Action, Keymap};
@@ -74,6 +75,10 @@ pub struct Preview {
 pub struct App {
     pub config: Config,
     pub keys: Keymap,
+    /// Color for key names in hints, parsed from `config.key_color`.
+    pub key_color: Color,
+    /// Problems found while starting up, shown once in a dialog.
+    pub startup_warnings: Vec<String>,
     pub browser: Browser,
     pub installs: Vec<Install>,
     pub install_state: ListState,
@@ -97,6 +102,20 @@ impl App {
         let installs = wow::discover(&config.wow_roots);
         let browser = Browser::new(config.start_dir(), config.filter_browser);
         let (tx, rx) = mpsc::channel();
+        let mut startup_warnings = Vec::new();
+        let key_color = match config.key_color.trim().parse::<Color>() {
+            Ok(c) => c,
+            Err(_) => {
+                startup_warnings.push(format!(
+                    "key_color {:?} in config.toml is not a color; using {DEFAULT_KEY_COLOR}.",
+                    config.key_color
+                ));
+                startup_warnings.push(
+                    "Use a name (gray, light blue, yellow), #rrggbb, or a 0-255 index.".into(),
+                );
+                DEFAULT_KEY_COLOR.parse().expect("default color")
+            }
+        };
         let mut app = App {
             browser,
             installs,
@@ -115,6 +134,8 @@ impl App {
             should_quit: false,
             config,
             keys,
+            key_color,
+            startup_warnings,
         };
         if !app.installs.is_empty() {
             let idx = app
@@ -780,12 +801,13 @@ impl App {
 }
 
 pub fn run(config: Config) -> Result<()> {
-    let (keys, warnings) = Keymap::load();
+    let (keys, mut warnings) = Keymap::load();
     let mut terminal = ratatui::init();
     let mut app = App::new(config, keys);
+    warnings.append(&mut app.startup_warnings);
     if !warnings.is_empty() {
         app.modal = Some(Modal::Message {
-            title: "Key bindings".into(),
+            title: "Configuration".into(),
             lines: warnings,
         });
     }
@@ -864,6 +886,7 @@ wow
             last_flavor: None,
             backups: true,
             filter_browser: true,
+            ..Config::default()
         };
         let mut app = App::new(config, Keymap::default());
         // Point at our fake install explicitly (the machine may have real ones).
@@ -945,6 +968,7 @@ wow
             last_flavor: None,
             backups: true,
             filter_browser: true,
+            ..Config::default()
         };
         let mut app = App::new(config, Keymap::default());
         let idx = app
@@ -1017,6 +1041,7 @@ wow
             last_flavor: None,
             backups: true,
             filter_browser: true,
+            ..Config::default()
         };
         let keys = Keymap::parse("uninstall = [\"x\"]\nrollback = [\"Ctrl-z\"]\nhelp = [\"F1\"]\n")
             .unwrap();
@@ -1060,6 +1085,53 @@ wow
             .find(|l| l.contains("uninstall the selected addon"))
             .unwrap();
         assert!(line.contains(" x "), "{line}");
+    }
+
+    #[test]
+    fn key_color_is_parsed_and_bad_values_warn() {
+        let base = Config {
+            wow_roots: Vec::new(),
+            browse_dir: Some(std::env::temp_dir()),
+            ..Config::default()
+        };
+        let app = App::new(base.clone(), Keymap::default());
+        assert_eq!(app.key_color, Color::Rgb(0x8a, 0x8a, 0x8a));
+        assert!(app.startup_warnings.is_empty());
+
+        let app = App::new(
+            Config {
+                key_color: "light blue".into(),
+                ..base.clone()
+            },
+            Keymap::default(),
+        );
+        assert_eq!(app.key_color, Color::LightBlue);
+
+        let mut app = App::new(
+            Config {
+                key_color: "not a color".into(),
+                ..base
+            },
+            Keymap::default(),
+        );
+        assert_eq!(app.key_color, Color::Rgb(0x8a, 0x8a, 0x8a));
+        assert_eq!(app.startup_warnings.len(), 2);
+        assert!(app.startup_warnings[0].contains("not a color"));
+
+        // Key names in the status bar carry the key color; descriptions do not.
+        app.focus = Focus::Addons;
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let y = buf.area.height - 1;
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        let x = row.find("u uninstall").unwrap() as u16;
+        assert_eq!(buf[(x, y)].fg, Color::Rgb(0x8a, 0x8a, 0x8a));
+        assert_eq!(buf[(x + 2, y)].fg, Color::DarkGray);
     }
 
     fn buffer_text(backend: &TestBackend) -> String {

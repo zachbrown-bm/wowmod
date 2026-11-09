@@ -33,7 +33,21 @@ wowmod install DBM.zip --flavor wowf
   checkbox (toggle with `Space`) that starts from the `b` setting.
 - `Space` marks extra installs so one zip goes to several flavors at once.
 
-Settings persist in `%APPDATA%\wowmod\config\config.toml`.
+Settings persist in `%APPDATA%\wowmod\config\config.toml`. Any setting
+missing from the file is added back with its default the next time the app
+starts, so the file always lists everything you can change.
+
+Key names in the status bar, dialog footers and help are drawn in
+`key_color`, default `#8a8a8a`: a little lighter than the terminal's dark
+gray, and a fixed RGB value so themes such as Solarized Dark (which maps
+dark gray to its background) cannot hide it. Set it to any ratatui color
+string: a name such as `gray`, `light blue` or `yellow`, a hex value such as
+`#b0b0b0`, or a 0-255 palette index. An unrecognised value is reported at
+startup and the default is used.
+
+```toml
+key_color = "light yellow"
+```
 
 ## Keys
 

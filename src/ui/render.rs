@@ -343,63 +343,78 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// A row of `key description` hints: keys in the configured key color,
+/// descriptions dim. Pairs are separated by `gap`.
+fn hints(app: &App, pairs: &[(String, &str)], gap: &str) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (key, desc)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(gap.to_string(), Style::default().fg(DIM)));
+        }
+        spans.push(Span::styled(
+            key.clone(),
+            Style::default().fg(app.key_color),
+        ));
+        spans.push(Span::styled(format!(" {desc}"), Style::default().fg(DIM)));
+    }
+    Line::from(spans)
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let k = |a: Action| app.keys.short(a);
-    let keys = match app.focus {
-        Focus::Browser => format!(
-            "{}/{} install  {} up  {} open  {} go to  {} filter",
-            k(Action::Select),
-            k(Action::Install),
-            k(Action::Back),
-            k(Action::Forward),
-            k(Action::GoTo),
-            k(Action::ToggleFilter)
-        ),
-        Focus::Installs => format!(
-            "{} mark  {} addons  {} uninstall  {} rollback",
-            k(Action::Mark),
-            k(Action::Select),
-            k(Action::Uninstall),
-            k(Action::Rollback)
-        ),
-        Focus::Addons => format!(
-            "{} details  {} uninstall  {} rollback",
-            k(Action::Select),
-            k(Action::Uninstall),
-            k(Action::Rollback)
-        ),
+    let left_pairs: Vec<(String, &str)> = match app.focus {
+        Focus::Browser => vec![
+            (
+                format!("{}/{}", k(Action::Select), k(Action::Install)),
+                "install",
+            ),
+            (k(Action::Back), "up"),
+            (k(Action::Forward), "open"),
+            (k(Action::GoTo), "go to"),
+            (k(Action::ToggleFilter), "filter"),
+        ],
+        Focus::Installs => vec![
+            (k(Action::Mark), "mark"),
+            (k(Action::Select), "addons"),
+            (k(Action::Uninstall), "uninstall"),
+            (k(Action::Rollback), "rollback"),
+        ],
+        Focus::Addons => vec![
+            (k(Action::Select), "details"),
+            (k(Action::Uninstall), "uninstall"),
+            (k(Action::Rollback), "rollback"),
+        ],
     };
     let backups = if app.config.backups {
         "backups on"
     } else {
         "backups OFF"
     };
+    let right_pairs = vec![
+        (k(Action::NextPanel), "panels"),
+        (k(Action::ToggleBackups), backups),
+        (k(Action::Help), "help"),
+        (k(Action::Quit), "quit"),
+    ];
+    let mut right = hints(app, &right_pairs, "  ");
+    right.spans.insert(0, Span::raw(" "));
+    right.spans.push(Span::raw(" "));
+    let right_w = (right.width() as u16).min(area.width);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(right_w)])
+        .split(area);
+
     let left = if app.status.is_empty() {
-        keys
+        hints(app, &left_pairs, "  ")
     } else {
-        app.status.clone()
+        Line::from(Span::styled(
+            app.status.clone(),
+            Style::default().fg(Color::White),
+        ))
     };
-    let right = format!(
-        " {} panels  {} {backups}  {} help  {} quit ",
-        k(Action::NextPanel),
-        k(Action::ToggleBackups),
-        k(Action::Help),
-        k(Action::Quit)
-    );
-    let width = area.width as usize;
-    let left_w = width.saturating_sub(right.len());
-    let line = Line::from(vec![
-        Span::styled(
-            format!("{:<left_w$.left_w$}", left),
-            Style::default().fg(if app.status.is_empty() {
-                DIM
-            } else {
-                Color::White
-            }),
-        ),
-        Span::styled(right, Style::default().fg(DIM)),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(Paragraph::new(left), cols[0]);
+    f.render_widget(Paragraph::new(right), cols[1]);
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -417,23 +432,30 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
     let Some(modal) = &app.modal else { return };
     let km = &app.keys;
     let mut scroll = 0;
-    let (title, lines, footer): (String, Vec<Line>, String) = match modal {
+    let plain = |s: &str| Line::from(Span::styled(s.to_string(), Style::default().fg(DIM)));
+    let (title, lines, footer): (String, Vec<Line>, Line) = match modal {
         Modal::Help { scroll: s } => {
             scroll = *s;
             (
                 "Help".into(),
-                help_lines(km).into_iter().map(Line::from).collect(),
-                format!(
-                    " {}/{} scroll    any other key to close ",
-                    km.short(Action::Up),
-                    km.short(Action::Down)
+                help_lines(app),
+                hints(
+                    app,
+                    &[
+                        (
+                            format!("{}/{}", km.short(Action::Up), km.short(Action::Down)),
+                            "scroll",
+                        ),
+                        ("any other key".into(), "close"),
+                    ],
+                    "    ",
                 ),
             )
         }
         Modal::Message { title, lines } => (
             title.clone(),
             lines.iter().map(|l| Line::from(l.clone())).collect(),
-            " any key to close ".into(),
+            plain(" any key to close "),
         ),
         Modal::Confirm { title, lines, .. } => (
             title.clone(),
@@ -448,10 +470,13 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                     }
                 })
                 .collect(),
-            format!(
-                " {} confirm    {} cancel ",
-                km.label(Action::Confirm),
-                km.label(Action::Cancel)
+            hints(
+                app,
+                &[
+                    (km.label(Action::Confirm), "confirm"),
+                    (km.label(Action::Cancel), "cancel"),
+                ],
+                "    ",
             ),
         ),
         Modal::Uninstall { lines, backup, .. } => {
@@ -473,11 +498,14 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
             (
                 "Uninstall?".into(),
                 out,
-                format!(
-                    " {} toggle backup    {} uninstall    {} cancel ",
-                    km.label(Action::Toggle),
-                    km.label(Action::Confirm),
-                    km.label(Action::Cancel)
+                hints(
+                    app,
+                    &[
+                        (km.label(Action::Toggle), "toggle backup"),
+                        (km.label(Action::Confirm), "uninstall"),
+                        (km.label(Action::Cancel), "cancel"),
+                    ],
+                    "    ",
                 ),
             )
         }
@@ -488,16 +516,23 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(""),
                 Line::from("Paste or type a path.").fg(DIM),
             ],
-            " Enter ok    Esc cancel ".into(),
+            hints(
+                app,
+                &[("Enter".into(), "ok"), ("Esc".into(), "cancel")],
+                "    ",
+            ),
         ),
     };
+    let mut footer = footer;
+    footer.spans.insert(0, Span::raw(" "));
+    footer.spans.push(Span::raw(" "));
     let width = lines
         .iter()
         .map(|l| l.width())
         .max()
         .unwrap_or(20)
         .max(title.len() + 4)
-        .max(footer.len() + 2) as u16
+        .max(footer.width() + 2) as u16
         + 4;
     let height = lines.len() as u16 + 2;
     let rect = centered(area, width.min(area.width.saturating_sub(4)), height);
@@ -509,7 +544,7 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
             format!(" {title} "),
             Style::default().fg(ACCENT).bold(),
         ))
-        .title_bottom(Line::from(footer).fg(DIM).alignment(Alignment::Right))
+        .title_bottom(footer.alignment(Alignment::Right))
         .padding(Padding::horizontal(1));
     let max_scroll = (lines.len() as u16).saturating_sub(rect.height.saturating_sub(2));
     f.render_widget(
@@ -522,36 +557,53 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The help screen, built from the live key bindings.
-fn help_lines(km: &Keymap) -> Vec<String> {
-    let mut out = Vec::new();
+fn help_lines(app: &App) -> Vec<Line<'static>> {
+    let km = &app.keys;
+    let mut out: Vec<Line> = Vec::new();
     match Keymap::path() {
         Some(p) => {
-            out.push(format!("Keys are set in {}", p.display()));
-            out.push("Edit the file and restart wowmod to apply changes.".into());
+            out.push(Line::from(format!("Keys are set in {}", p.display())));
+            out.push(Line::from(
+                "Edit the file and restart wowmod to apply changes.",
+            ));
         }
-        None => out.push("Default keys (no config directory found).".into()),
+        None => out.push(Line::from("Default keys (no config directory found).")),
     }
+    out.push(Line::from(format!(
+        "Key names are drawn in key_color from config.toml (now {}).",
+        app.config.key_color
+    )));
     let sections: [(&str, &[Action]); 3] = [
         ("Global", Action::GLOBAL),
         ("Navigation inside the focused panel", Action::NAV),
         ("Dialogs", Action::MODAL),
     ];
     for (title, actions) in sections {
-        out.push(String::new());
-        out.push(title.to_string());
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(title, Style::default().bold())));
         for &a in actions {
-            out.push(format!("  {:<18} {}", km.label(a), a.describe()));
+            out.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:<18}", km.label(a)),
+                    Style::default().fg(app.key_color),
+                ),
+                Span::raw(format!(" {}", a.describe())),
+            ]));
         }
     }
-    out.push(String::new());
-    out.push(format!(
+    out.push(Line::from(""));
+    out.push(Line::from(format!(
         "The uninstall dialog has a back-up-first checkbox preset from the {} setting.",
         km.short(Action::ToggleBackups)
+    )));
+    out.push(Line::from(
+        "Backups live in <flavor>\\Interface\\AddOns.wowmod-backup\\<Folder>-<timestamp>.",
     ));
-    out.push(
-        "Backups live in <flavor>\\Interface\\AddOns.wowmod-backup\\<Folder>-<timestamp>.".into(),
-    );
-    out.push("Zips are extracted to a temp folder; the addon root is the folder holding".into());
-    out.push("<Name>.toc, even if the zip wraps it in another folder (GitHub style).".into());
+    out.push(Line::from(
+        "Zips are extracted to a temp folder; the addon root is the folder holding",
+    ));
+    out.push(Line::from(
+        "<Name>.toc, even if the zip wraps it in another folder (GitHub style).",
+    ));
     out
 }

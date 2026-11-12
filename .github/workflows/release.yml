@@ -2,6 +2,10 @@
 # the binaries to a GitHub Release. install.ps1 / install.sh download these.
 #
 #   git tag v0.1.0 && git push origin v0.1.0
+#
+# Windows and Linux build on GitHub-hosted runners. macOS builds on a
+# self-hosted Apple Silicon runner (labels: self-hosted, macOS, ARM64) that
+# has rustup installed.
 name: Release
 
 on:
@@ -12,9 +16,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-hosted:
     name: ${{ matrix.asset }}
-    runs-on: self-hosted
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -22,9 +26,6 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: wowmod-windows-x86_64.zip
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            asset: wowmod-macos-aarch64.tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: wowmod-linux-x86_64.tar.gz
@@ -39,7 +40,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path target/${{ matrix.target }}/release/wowmod.exe -DestinationPath ${{ matrix.asset }}
-      - name: Package (Unix)
+      - name: Package (Linux)
         if: runner.os != 'Windows'
         run: tar -czf ${{ matrix.asset }} -C target/${{ matrix.target }}/release wowmod
       - uses: actions/upload-artifact@v7
@@ -47,8 +48,28 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
+  build-macos:
+    name: wowmod-macos-aarch64.tar.gz
+    runs-on: [self-hosted, macOS, ARM64]
+    env:
+      TARGET: aarch64-apple-darwin
+      ASSET: wowmod-macos-aarch64.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package
+        run: tar -czf "$ASSET" -C "target/$TARGET/release" wowmod
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+
   release:
-    needs: build
+    needs: [build-hosted, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

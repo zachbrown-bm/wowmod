@@ -127,6 +127,8 @@ pub struct App {
     pub preview_gen: u64,
     pub preview_rx: mpsc::Receiver<Preview>,
     pub preview_tx: mpsc::Sender<Preview>,
+    /// Install was pressed while analysing; the prompt opens once it's done.
+    pub install_queued: bool,
     pub should_quit: bool,
 }
 
@@ -165,6 +167,7 @@ impl App {
             preview_gen: 0,
             preview_rx: rx,
             preview_tx: tx,
+            install_queued: false,
             should_quit: false,
             config,
             keys,
@@ -249,6 +252,11 @@ impl App {
         self.preview_gen += 1;
         let generation = self.preview_gen;
         self.preview = None;
+        // The selection or flavor changed, so a queued install no longer applies.
+        if self.install_queued {
+            self.install_queued = false;
+            self.status = "Install cancelled.".into();
+        }
         let Some(entry) = self.browser.selected().cloned() else {
             self.preview_pending = false;
             return;
@@ -273,6 +281,12 @@ impl App {
                 self.preview_pending = false;
                 self.preview = Some(p);
             }
+        }
+        // Wait for any open dialog to close before showing the prompt.
+        if self.install_queued && !self.preview_pending && self.modal.is_none() {
+            self.install_queued = false;
+            self.status.clear();
+            self.begin_install();
         }
     }
 
@@ -307,12 +321,13 @@ impl App {
             self.status = "No WoW install selected.".into();
             return;
         }
+        if self.preview_pending {
+            self.install_queued = true;
+            self.status = "Analysing, install will start when done.".into();
+            return;
+        }
         let Some(preview) = &self.preview else {
-            self.status = if self.preview_pending {
-                "Still analysing, try again in a moment.".into()
-            } else {
-                "Select a zip file or addon folder in the browser first.".into()
-            };
+            self.status = "Select a zip file or addon folder in the browser first.".into();
             return;
         };
         let pkg = match &preview.result {
@@ -1056,9 +1071,24 @@ wow
             .unwrap();
         app.browser.state.select(Some(pos));
         app.request_preview();
-        let p = app.preview_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        app.preview = Some(p);
-        app.preview_pending = false;
+
+        // Install pressed while analysing is queued. It waits for an open
+        // dialog to close, then opens the install prompt.
+        assert!(app.preview_pending);
+        app.begin_install();
+        assert!(app.install_queued && app.modal.is_none());
+        app.modal = Some(Modal::Help { scroll: 0 });
+        let start = std::time::Instant::now();
+        while app.preview_pending && start.elapsed() < Duration::from_secs(5) {
+            app.poll_preview();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
+        app.modal = None;
+        app.poll_preview();
+        assert!(matches!(app.modal, Some(Modal::Confirm { .. })));
+        assert!(!app.install_queued);
+        app.modal = None;
 
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).unwrap();

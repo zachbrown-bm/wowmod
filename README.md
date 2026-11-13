@@ -78,13 +78,28 @@ git push origin v0.1.0
 - Right panel lists installs and the addons in the selected one, grouped into
   logical addons (shared `X-Curse-Project-ID` or dependency + name prefix),
   with version and enabled state read from `WTF\...\AddOns.txt`.
-- Install (`i`), uninstall (`u`), roll back to the newest backup (`r`). `Enter`
+- Install (`i`), uninstall (`d`), roll back to the newest backup (`r`). `Enter`
   on a zip or addon folder shows the same details dialog as an installed addon.
   Replaced or removed folders are moved to
   `<flavor>\Interface\AddOns.wowmod-backup\<Folder>-<timestamp>` unless
   backups are turned off with `b`. The uninstall dialog has a "back up first"
   checkbox (toggle with `Space`) that starts from the `b` setting.
 - `Space` marks extra installs so one zip goes to several flavors at once.
+- `c` installs from CurseForge: paste a `curseforge.com/projects/<id>` link
+  or the Project ID (an addon page link is looked up through cfwidget, which
+  does not know every addon). The addon and everything it requires is
+  installed, recursively. This is what makes "install" / meta packages such
+  as Spoken: English work: their zip is an empty stub and the real addons are
+  listed as required dependencies on CurseForge. A dialog lists every mod and
+  its download size before anything is downloaded.
+- `u` updates what was installed with `c` in the selected (or marked)
+  installs: newer files and any newly required addons, skipping addons you
+  have since uninstalled. The newest stable file for the flavor wins, falling
+  back to a beta when there is no stable one. What was installed is recorded
+  in `manifest.toml` next to `config.toml`. Downloads run in the background
+  with progress in the status bar. Both use the JSON endpoints behind
+  www.curseforge.com, which need no API key but are undocumented and may
+  change.
 
 Settings persist in `%APPDATA%\wowmod\config\config.toml`. Any setting
 missing from the file is added back with its default the next time the app
@@ -117,11 +132,13 @@ on a panel focuses it as well. Because the app captures the mouse, hold
 | g | type a folder path to browse |
 | f | show all files, not just zips and folders |
 | Space | mark extra install targets |
-| u | uninstall selected addon (confirmation has a backup checkbox) |
+| d | uninstall selected addon (confirmation has a backup checkbox) |
 | r | roll back selected addon to its newest backup |
+| c | install from a CurseForge link or project id, with everything it requires |
+| u | update addons installed from CurseForge |
 | a | add a World of Warcraft folder that was not detected |
 | b | toggle backups |
-| R / F5 | refresh |
+| F5 | refresh |
 | q | quit (asks for confirmation) |
 
 ### Changing keys
@@ -130,7 +147,8 @@ The first run writes `%APPDATA%\wowmod\config\keymaps.toml` with every action an
 its default keys. Edit the lists there and restart; the status bar, dialog
 footers and help screen all show whatever you configured. Remove an action
 to get its default back, or set it to `[]` to unbind it. The app never
-rewrites the file, so comments survive.
+rewrites the file; the key review below only changes the lines you pick,
+so comments survive.
 
 ```toml
 # uninstall with Delete, roll back with Ctrl-z
@@ -141,9 +159,16 @@ rollback = ["Ctrl-z"]
 Single characters are case-sensitive (`r` and `R` differ). Named keys:
 `Enter Esc Tab Shift-Tab Space Up Down Left Right PgUp PgDn Home End
 Backspace Del Ins F1..F12`; modifiers `Ctrl-x` and `Alt-x`. Global actions
-(quit, install, uninstall, ...) are checked before panel navigation, and a
-key bound to two actions is reported in a dialog at startup. A file that
-cannot be parsed is reported the same way and the defaults are used.
+(quit, install, uninstall, ...) are checked before panel navigation. A file
+that cannot be parsed is reported in a dialog at startup and the defaults
+are used.
+
+If a key ends up bound to two actions (usually because a new version added
+or changed a default that one of your keys already uses), the app opens a
+key review before anything else. It lists every action with your keys and
+the new default side by side: `Left` keeps yours, `Right` takes the new
+default. `Enter` saves once no key is bound twice, changing only the lines
+where you took the new default, and `Esc` quits without changing anything.
 
 ## Layout
 
@@ -155,6 +180,8 @@ src/wow.rs         install discovery
 src/addon.rs       scanning + grouping installed addons, enable state
 src/package.rs     zip extraction + addon root detection
 src/installer.rs   copy/backup/uninstall/rollback
+src/curseforge.rs  CurseForge add/update with dependency resolution
+src/manifest.rs    what was installed from CurseForge (manifest.toml)
 src/config.rs      persisted settings
 src/keymap.rs      configurable key bindings (keymaps.toml)
 src/ui/            ratatui app, browser, rendering
@@ -166,9 +193,10 @@ Nothing below is implemented yet. Items are roughly in priority order.
 
 ### Updating installed addons (the big one)
 
-Today wowmod only installs what you have already downloaded. The goal is a
-`U` key (and `wowmod update`) that checks every installed addon for a newer
-release, downloads it, and reinstalls it with the usual backup.
+`c` / `u` cover CurseForge addons installed through wowmod (see above). The
+goal is for `u` to check every installed addon for a newer release, including
+ones from other providers and ones installed by other tools, download it, and
+reinstall it with the usual backup.
 
 **Identifying where an addon came from.** Three signals, in order of trust:
 

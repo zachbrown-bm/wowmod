@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 
 use super::browser::Kind;
-use super::{App, Focus, Modal};
+use super::{App, Focus, InputAction, Modal};
 use crate::addon;
 use crate::flavor::interface_to_version;
 use crate::keymap::Action;
@@ -386,17 +386,20 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             (k(Action::Forward), "open"),
             (k(Action::GoTo), "go to"),
             (k(Action::ToggleFilter), "filter"),
+            (k(Action::CurseForge), "curseforge"),
         ],
         Focus::Installs => vec![
             (k(Action::Mark), "mark"),
             (k(Action::Select), "addons"),
             (k(Action::Uninstall), "uninstall"),
             (k(Action::Rollback), "rollback"),
+            (k(Action::Update), "update"),
         ],
         Focus::Addons => vec![
             (k(Action::Select), "details"),
             (k(Action::Uninstall), "uninstall"),
             (k(Action::Rollback), "rollback"),
+            (k(Action::Update), "update"),
         ],
     };
     let backups = if app.config.backups {
@@ -446,6 +449,8 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
     let Some(modal) = &app.modal else { return };
     let km = &app.keys;
     let mut scroll = 0;
+    // A line that must stay visible (the selected row of the key review).
+    let mut focus = None;
     let plain = |s: &str| Line::from(Span::styled(s.to_string(), Style::default().fg(DIM)));
     let (title, lines, footer): (String, Vec<Line>, Line) = match modal {
         Modal::Help { scroll: s } => {
@@ -461,6 +466,25 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                             "scroll",
                         ),
                         ("any other key".into(), "close"),
+                    ],
+                    "    ",
+                ),
+            )
+        }
+        Modal::Keys(review) => {
+            let (lines, row0) = key_review_lines(app, review);
+            focus = Some(row0 + review.selected);
+            (
+                "Key bindings".into(),
+                lines,
+                hints(
+                    app,
+                    &[
+                        ("Up/Down".into(), "move"),
+                        ("Left".into(), "keep yours"),
+                        ("Right".into(), "use new"),
+                        ("Enter".into(), "save"),
+                        ("Esc".into(), "quit"),
                     ],
                     "    ",
                 ),
@@ -523,12 +547,22 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
                 ),
             )
         }
-        Modal::Input { title, value, .. } => (
+        Modal::Input {
+            title,
+            value,
+            action,
+        } => (
             title.clone(),
             vec![
                 Line::from(format!("{value}_")),
                 Line::from(""),
-                Line::from("Paste or type a path.").fg(DIM),
+                Line::from(match action {
+                    InputAction::CurseForge => {
+                        "Paste a curseforge.com/projects/<id> link, an addon page link or the Project ID."
+                    }
+                    _ => "Paste or type a path.",
+                })
+                .fg(DIM),
             ],
             hints(
                 app,
@@ -560,7 +594,11 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
         ))
         .title_bottom(footer.alignment(Alignment::Right))
         .padding(Padding::horizontal(1));
-    let max_scroll = (lines.len() as u16).saturating_sub(rect.height.saturating_sub(2));
+    let inner_height = rect.height.saturating_sub(2);
+    if let Some(line) = focus {
+        scroll = (line as u16).saturating_sub(inner_height.saturating_sub(1));
+    }
+    let max_scroll = (lines.len() as u16).saturating_sub(inner_height);
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -568,6 +606,89 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
             .scroll((scroll.min(max_scroll), 0)),
         rect,
     );
+}
+
+/// The key review: what is wrong, then one row per action with the user's
+/// keys and the default, the chosen side highlighted. Returns the lines and
+/// the index of the first action row.
+fn key_review_lines(app: &App, review: &crate::keymap::KeyReview) -> (Vec<Line<'static>>, usize) {
+    let label = |keys: &[crate::keymap::Key]| {
+        if keys.is_empty() {
+            "(unbound)".to_string()
+        } else {
+            keys.iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        }
+    };
+    let conflicts = review.keymap().conflicts();
+    let mut out = vec![
+        Line::from("Some keys in keymaps.toml are bound to two actions, usually because"),
+        Line::from("this version added or changed a default. For each action keep yours"),
+        Line::from("or take the new default. Saving only changes the lines you switched."),
+        Line::from(""),
+    ];
+    if conflicts.is_empty() {
+        out.push(
+            Line::from("No key is bound twice. Enter saves and opens wowmod.").fg(Color::Green),
+        );
+    }
+    for (k, a, b) in &conflicts {
+        out.push(
+            Line::from(format!(
+                "! {k} is bound to both {} and {}",
+                a.name(),
+                b.name()
+            ))
+            .fg(Color::Red),
+        );
+    }
+    out.push(Line::from(""));
+    out.push(
+        Line::from(format!(
+            "  {:<18}{:<22}{}",
+            "action", "yours", "new default"
+        ))
+        .bold(),
+    );
+    let row0 = out.len();
+    let chosen = Style::default().fg(app.key_color).bold();
+    let other = Style::default().fg(DIM);
+    for (i, r) in review.rows.iter().enumerate() {
+        let clash = conflicts
+            .iter()
+            .any(|(_, a, b)| *a == r.action || *b == r.action);
+        let yours = r
+            .yours
+            .as_deref()
+            .map(label)
+            .unwrap_or_else(|| "(default)".into());
+        let mut line = Line::from(vec![
+            Span::raw(if i == review.selected { "> " } else { "  " }),
+            Span::styled(
+                format!("{:<18}", r.action.name()),
+                if clash {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default()
+                },
+            ),
+            Span::styled(
+                format!("{yours:<22}"),
+                if r.use_default { other } else { chosen },
+            ),
+            Span::styled(
+                label(&r.default),
+                if r.use_default { chosen } else { other },
+            ),
+        ]);
+        if i == review.selected {
+            line = line.add_modifier(Modifier::REVERSED);
+        }
+        out.push(line);
+    }
+    (out, row0)
 }
 
 /// The help screen, built from the live key bindings.

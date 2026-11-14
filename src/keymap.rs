@@ -162,6 +162,7 @@ pub enum Action {
     Install,
     Uninstall,
     Rollback,
+    ToggleEnabled,
     #[serde(rename = "curseforge")]
     CurseForge,
     Update,
@@ -199,6 +200,7 @@ impl Action {
         Action::Install,
         Action::Uninstall,
         Action::Rollback,
+        Action::ToggleEnabled,
         Action::CurseForge,
         Action::Update,
     ];
@@ -241,6 +243,7 @@ impl Action {
             Action::Install => "install the selected zip or addon folder",
             Action::Uninstall => "uninstall the selected addon",
             Action::Rollback => "roll back the selected addon to its newest backup",
+            Action::ToggleEnabled => "turn the selected addon on or off for every character",
             Action::CurseForge => {
                 "install from a CurseForge link or project id, with everything it requires"
             }
@@ -296,6 +299,7 @@ impl Default for Keymap {
         set(Action::Install, &["i"]);
         set(Action::Uninstall, &["d"]);
         set(Action::Rollback, &["r"]);
+        set(Action::ToggleEnabled, &["e"]);
         set(Action::CurseForge, &["c"]);
         set(Action::Update, &["u"]);
         set(Action::Up, &["Up", "k"]);

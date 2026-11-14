@@ -28,6 +28,8 @@ pub struct Config {
     /// as `gray`, `light blue` or `yellow`, a hex value such as `#8a8a8a`,
     /// or a 0-255 palette index.
     pub key_color: String,
+    /// Install new wowmod releases from GitHub on startup.
+    pub auto_update: bool,
 }
 
 impl Default for Config {
@@ -39,6 +41,7 @@ impl Default for Config {
             backups: true,
             filter_browser: true,
             key_color: DEFAULT_KEY_COLOR.into(),
+            auto_update: true,
         }
     }
 }
@@ -76,7 +79,13 @@ impl Config {
     /// Settings a complete file always contains. `browse_dir` and
     /// `last_flavor` are optional and simply absent when unset.
     fn field_names() -> &'static [&'static str] {
-        &["wow_roots", "backups", "filter_browser", "key_color"]
+        &[
+            "wow_roots",
+            "backups",
+            "filter_browser",
+            "key_color",
+            "auto_update",
+        ]
     }
 
     pub fn save(&self) -> Result<()> {

@@ -7,6 +7,7 @@ from zips or folders you have already downloaded.
 cargo run --release            # open the UI
 wowmod list                    # print detected installs and their addons
 wowmod install DBM.zip --flavor wowf
+wowmod update                  # update wowmod to the newest release
 ```
 
 ## Installing
@@ -30,8 +31,14 @@ puts the binary in `%LOCALAPPDATA%\Programs\wowmod` (Windows) or `~/.local/bin`
 (macOS / Linux), and adds that folder to your `PATH` on Windows (open a new
 terminal afterwards). On macOS / Linux the script warns if `~/.local/bin` is
 not on your `PATH`; add `export PATH="$HOME/.local/bin:$PATH"` to your shell
-profile. Re-run the same line to upgrade, and `wowmod --version` shows what is
-installed. From a clone you can also run `.\install.ps1 -Version v0.1.0` to
+profile. `wowmod --version` shows what is installed.
+
+wowmod updates itself: each time it runs (the UI, `list` or `install`) it
+checks the latest GitHub release in the background, and if it is newer,
+swaps the binary in place and says so. The new version runs from the next
+start. `wowmod update` does the same on demand. Set `auto_update = false`
+in `config.toml` to turn off the automatic check. Builds run from a cargo
+`target` folder never update themselves. From a clone you can also run `.\install.ps1 -Version v0.1.0` to
 pin a version. You can always grab the zip from the releases page by hand
 instead.
 
@@ -175,7 +182,7 @@ where you took the new default, and `Esc` quits without changing anything.
 ## Layout
 
 ```
-src/main.rs        CLI entry (ui, list, install)
+src/main.rs        CLI entry (ui, list, install, update)
 src/toc.rs         .toc parsing, multi-TOC suffix selection
 src/flavor.rs      flavor codes, Interface ranges, TOC suffixes
 src/wow.rs         install discovery
@@ -185,6 +192,7 @@ src/installer.rs   copy/backup/uninstall/rollback
 src/curseforge.rs  CurseForge add/update with dependency resolution
 src/manifest.rs    what was installed from CurseForge (manifest.toml)
 src/config.rs      persisted settings
+src/selfupdate.rs  updating wowmod itself from GitHub releases
 src/keymap.rs      configurable key bindings (keymaps.toml)
 src/ui/            ratatui app, browser, rendering
 ```

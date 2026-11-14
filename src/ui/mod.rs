@@ -216,6 +216,17 @@ impl App {
         }
         app.refresh_addons();
         app.request_preview();
+        if app.config.auto_update {
+            let tx = app.job_tx.clone();
+            std::thread::spawn(move || {
+                // Failures (offline, rate limited) are not worth interrupting for.
+                if let Ok(Some(v)) = crate::selfupdate::update() {
+                    let _ = tx.send(Job::Progress(format!(
+                        "Updated wowmod to {v}. Restart to use it."
+                    )));
+                }
+            });
+        }
         app
     }
 

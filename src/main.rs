@@ -6,6 +6,7 @@ mod installer;
 mod keymap;
 mod manifest;
 mod package;
+mod selfupdate;
 mod toc;
 mod ui;
 mod wow;
@@ -50,6 +51,8 @@ enum Command {
         #[arg(long)]
         root: Vec<PathBuf>,
     },
+    /// Update wowmod to the newest GitHub release.
+    Update,
 }
 
 fn roots(config: &Config, extra: &[PathBuf]) -> Vec<PathBuf> {
@@ -59,10 +62,37 @@ fn roots(config: &Config, extra: &[PathBuf]) -> Vec<PathBuf> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load();
-    match cli.command {
-        None => ui::run(config),
-        Some(Command::List { root }) => {
-            let installs = wow::discover(&roots(&config, &root));
+    let command = match cli.command {
+        None => return ui::run(config),
+        Some(Command::Update) => return update(),
+        Some(c) => c,
+    };
+    // Other commands look for a new wowmod while they work.
+    let check = config
+        .auto_update
+        .then(|| std::thread::spawn(selfupdate::update));
+    let result = run(command, &config);
+    if let Some(Ok(Ok(Some(v)))) = check.map(|h| h.join()) {
+        eprintln!("Updated wowmod to {v}. The next run uses it.");
+    }
+    result
+}
+
+fn update() -> Result<()> {
+    if selfupdate::is_dev_build() {
+        bail!("this is a dev build (run from a cargo target folder), it does not update itself");
+    }
+    match selfupdate::update()? {
+        Some(v) => println!("Updated wowmod to {v}."),
+        None => println!("wowmod {} is up to date.", env!("CARGO_PKG_VERSION")),
+    }
+    Ok(())
+}
+
+fn run(command: Command, config: &Config) -> Result<()> {
+    match command {
+        Command::List { root } => {
+            let installs = wow::discover(&roots(config, &root));
             if installs.is_empty() {
                 println!("No World of Warcraft installs found.");
             }
@@ -85,13 +115,13 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Command::Install {
+        Command::Install {
             source,
             flavor,
             no_backup,
             root,
-        }) => {
-            let installs = wow::discover(&roots(&config, &root));
+        } => {
+            let installs = wow::discover(&roots(config, &root));
             let target = match flavor {
                 Some(f) => {
                     let matches: Vec<_> = installs
@@ -150,5 +180,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Update => unreachable!("handled in main"),
     }
 }

@@ -14,6 +14,8 @@ use crate::keymap::Action;
 
 const ACCENT: Color = Color::Yellow;
 const DIM: Color = Color::DarkGray;
+/// CurseForge orange, for addons `u` keeps updated.
+const CURSEFORGE: Color = Color::Indexed(202);
 
 /// A bordered panel whose title starts with the key that focuses it, drawn
 /// in the key color so it reads as a hot key.
@@ -290,6 +292,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             let title = a.title();
             let ver = a.version();
             let en = a.primary.enabled;
+            let cf = app.curseforge.contains(&a.primary.name);
             let mut flags = Vec::new();
             if !a.members.is_empty() {
                 flags.push(format!("+{}", a.members.len()));
@@ -316,12 +319,17 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 format!(" {}", flags.join(" "))
             };
-            let name_w = width.saturating_sub(14 + 6 + flags_text.len()).clamp(8, 40);
+            let name_w = width
+                .saturating_sub(14 + 6 + 3 * cf as usize + flags_text.len())
+                .clamp(8, 40);
             let mut line = vec![
                 Span::styled(format!("{:<name_w$.name_w$}", title), Style::default()),
                 Span::styled(format!(" {:<13.13}", ver), Style::default().fg(DIM)),
                 Span::styled(format!(" {:<5}", en.short()), en_style),
             ];
+            if cf {
+                line.push(Span::styled(" cf", Style::default().fg(CURSEFORGE)));
+            }
             if !flags_text.is_empty() {
                 let has_warn = flags
                     .iter()

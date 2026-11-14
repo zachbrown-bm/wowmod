@@ -131,6 +131,8 @@ pub struct App {
     /// Extra install targets toggled with Space (indices into `installs`).
     pub marked: BTreeSet<usize>,
     pub addons: Vec<InstalledAddon>,
+    /// Folders in the current install that `u` updates from CurseForge.
+    pub curseforge: BTreeSet<String>,
     pub addon_state: ListState,
     pub focus: Focus,
     /// Where each panel was drawn last frame, so mouse clicks can focus it.
@@ -179,6 +181,7 @@ impl App {
             install_state: ListState::default(),
             marked: BTreeSet::new(),
             addons: Vec::new(),
+            curseforge: BTreeSet::new(),
             addon_state: ListState::default(),
             focus: Focus::Browser,
             panel_areas: PanelAreas::default(),
@@ -262,6 +265,15 @@ impl App {
         self.addons = match self.current_install() {
             Some(i) => addon::scan(i),
             None => Vec::new(),
+        };
+        self.curseforge = match self.current_install() {
+            Some(i) => Manifest::load()
+                .mods
+                .into_iter()
+                .filter(|e| e.install == i.path)
+                .flat_map(|e| e.folders)
+                .collect(),
+            None => BTreeSet::new(),
         };
         let idx = keep
             .and_then(|n| self.addons.iter().position(|a| a.primary.name == n))
@@ -1376,6 +1388,19 @@ wow
         assert!(text.contains("missing MissingLib"));
         assert!(text.contains("SomeAddon"));
         assert!(text.contains("no Interface version for Retail"));
+
+        // Addons installed from CurseForge are tagged.
+        let row = |t: &str| {
+            t.lines()
+                .find(|l| l.contains("Existing Addon"))
+                .unwrap()
+                .to_string()
+        };
+        assert!(!row(&text).contains(" cf"));
+        app.curseforge.insert("Existing".into());
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        assert!(row(&buffer_text(terminal.backend())).contains(" cf"));
+        app.curseforge.clear();
 
         // Enter on the addon folder shows its details, not an install prompt.
         app.focus = Focus::Browser;

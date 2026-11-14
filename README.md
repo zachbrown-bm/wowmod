@@ -94,7 +94,8 @@ git push origin v0.1.0
   its download size before anything is downloaded.
 - `u` updates what was installed with `c` in the selected (or marked)
   installs: newer files and any newly required addons, skipping addons you
-  have since uninstalled. The newest stable file for the flavor wins, falling
+  have since uninstalled or replaced with `i` (the install dialog warns when
+  a zip replaces a CurseForge addon). The newest stable file for the flavor wins, falling
   back to a beta when there is no stable one. What was installed is recorded
   in `manifest.toml` next to `config.toml`. Downloads run in the background
   with progress in the status bar. Both use the JSON endpoints behind

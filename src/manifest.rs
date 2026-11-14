@@ -60,6 +60,23 @@ impl Manifest {
         self.mods.push(entry);
     }
 
+    /// Entries in `install` that own any of `folders`.
+    pub fn owners<'a>(
+        &'a self,
+        install: &'a Path,
+        folders: &'a [String],
+    ) -> impl Iterator<Item = &'a Entry> {
+        self.mods
+            .iter()
+            .filter(move |e| e.install == install && e.folders.iter().any(|f| folders.contains(f)))
+    }
+
+    /// Stop tracking mods whose folders were replaced by a manual install.
+    pub fn forget(&mut self, install: &Path, folders: &[String]) {
+        self.mods
+            .retain(|e| e.install != install || !e.folders.iter().any(|f| folders.contains(f)));
+    }
+
     /// Mod ids recorded for one install, dropping any whose folders are all
     /// gone (uninstalled since) so `update` does not bring them back.
     pub fn ids_for(&mut self, install: &Install) -> Vec<u64> {
@@ -72,5 +89,37 @@ impl Manifest {
             .filter(|e| e.install == install.path)
             .map(|e| e.mod_id)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_install_forgets_mods_sharing_a_folder() {
+        let entry = |install: &str, id, folders: &[&str]| Entry {
+            install: install.into(),
+            mod_id: id,
+            file_id: 1,
+            name: format!("mod {id}"),
+            folders: folders.iter().map(|f| f.to_string()).collect(),
+            installed_at: String::new(),
+        };
+        let mut m = Manifest {
+            mods: vec![
+                entry("retail", 1, &["Spoken", "Spoken_Data"]),
+                entry("retail", 2, &["Other"]),
+                entry("classic", 3, &["Spoken"]),
+            ],
+        };
+        let zip = vec!["Spoken_Data".to_string()];
+        let retail = Path::new("retail");
+        assert_eq!(
+            m.owners(retail, &zip).map(|e| e.mod_id).collect::<Vec<_>>(),
+            [1]
+        );
+        m.forget(retail, &zip);
+        assert_eq!(m.mods.iter().map(|e| e.mod_id).collect::<Vec<_>>(), [2, 3]);
     }
 }

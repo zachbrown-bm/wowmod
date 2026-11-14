@@ -146,6 +146,8 @@ fn download(mod_id: u64, file_id: u64, dest: &Path) -> Result<()> {
 pub struct Planned {
     pub mod_id: u64,
     pub file: File,
+    /// Already installed from CurseForge, so this is an update.
+    pub update: bool,
 }
 
 /// What installing or updating some mods into one install would do.
@@ -174,13 +176,15 @@ pub fn plan(ids: &[u64], target: &Install, manifest: &Manifest) -> Plan {
         });
         match file {
             Ok(Some(file)) => {
-                let current = manifest.get(&target.path, id).is_some_and(|e| {
+                let entry = manifest.get(&target.path, id);
+                let current = entry.is_some_and(|e| {
                     e.file_id == file.id && e.folders.iter().all(|f| addons.join(f).is_dir())
                 });
                 if current {
                     plan.up_to_date += 1;
                 } else {
-                    plan.todo.push(Planned { mod_id: id, file });
+                    let update = entry.is_some();
+                    plan.todo.push(Planned { mod_id: id, file, update });
                 }
             }
             Ok(None) => plan.problems.push(format!(

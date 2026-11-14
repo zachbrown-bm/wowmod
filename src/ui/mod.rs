@@ -402,8 +402,9 @@ impl App {
         for (t, p) in &plans {
             lines.push(format!("Into {}:", t.label()));
             for m in &p.todo {
+                let verb = if m.update { "update " } else { "install" };
                 lines.push(format!(
-                    "  {}  ({})",
+                    "  {verb} {}  ({})",
                     m.file.display_name,
                     size(m.file.file_length)
                 ));
@@ -429,10 +430,11 @@ impl App {
             todo.len(),
             size(bytes)
         ));
+        lines.push("Addon folders already in AddOns (e.g. from a zip) are replaced.".into());
         lines.push(if self.config.backups {
-            "Replaced folders are moved to AddOns.wowmod-backup.".into()
+            "The old ones are moved to AddOns.wowmod-backup.".into()
         } else {
-            "Backups are OFF: replaced folders are deleted.".into()
+            "Backups are OFF: the old ones are deleted.".into()
         });
         self.modal = Some(Modal::Confirm {
             title: "Install from CurseForge?".into(),
@@ -522,11 +524,20 @@ impl App {
                 return;
             }
         };
+        let manifest = Manifest::load();
+        let folders: Vec<String> = pkg.roots.iter().map(|r| r.name.clone()).collect();
         let mut lines = Vec::new();
         for t in &targets {
             lines.push(format!("Into {}:", t.label()));
             for l in installer::preview_lines(&pkg.roots, t) {
                 lines.push(format!("  {l}"));
+            }
+            for e in manifest.owners(&t.path, &folders) {
+                lines.push(format!(
+                    "  ! {} was installed from CurseForge. This replaces it and {} will stop updating it.",
+                    e.name,
+                    self.keys.short(Action::Update)
+                ));
             }
             for r in &pkg.roots {
                 if r.toc.supports(&t.flavor) == Some(false) {
@@ -559,21 +570,33 @@ impl App {
         let opts = installer::Options {
             backups: self.config.backups,
         };
+        let mut manifest = Manifest::load();
+        let tracked = manifest.mods.len();
         let mut msgs = Vec::new();
         for t in self.targets() {
             match installer::install(&pkg, &t, &opts) {
-                Ok(rep) => msgs.push(format!(
-                    "{}: {} ({} replaced)",
-                    t.label(),
-                    rep.installed
-                        .iter()
-                        .map(|r| r.folder.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    rep.replaced.len()
-                )),
+                Ok(rep) => {
+                    let folders: Vec<String> =
+                        rep.installed.iter().map(|r| r.folder.clone()).collect();
+                    manifest.forget(&t.path, &folders);
+                    msgs.push(format!(
+                        "{}: {} ({} replaced)",
+                        t.label(),
+                        rep.installed
+                            .iter()
+                            .map(|r| r.folder.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        rep.replaced.len()
+                    ))
+                }
                 Err(e) => msgs.push(format!("{}: FAILED {e:#}", t.label())),
             }
+        }
+        if manifest.mods.len() != tracked
+            && let Err(e) = manifest.save()
+        {
+            msgs.push(format!("could not save manifest: {e:#}"));
         }
         self.status = format!("Installed {}", msgs.join(" | "));
         self.refresh_addons();

@@ -18,7 +18,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use ratatui::widgets::ListState;
 
-use crate::addon::{self, InstalledAddon};
+use crate::addon::{self, EnableState, InstalledAddon};
 use crate::config::{Config, DEFAULT_KEY_COLOR};
 use crate::curseforge::{self, Plan};
 use crate::flavor::Flavor;
@@ -719,6 +719,33 @@ impl App {
         self.refresh_addons();
     }
 
+    fn toggle_enabled(&mut self) {
+        let Some(install) = self.current_install().cloned() else {
+            return;
+        };
+        let Some(a) = self.current_addon() else {
+            self.status = "No addon selected.".into();
+            return;
+        };
+        let (title, folders) = (a.title(), a.folder_names());
+        let on = matches!(
+            a.primary.enabled,
+            EnableState::Disabled | EnableState::Mixed
+        );
+        if wow::game_running() {
+            self.status =
+                "Close World of Warcraft first; it rewrites addon settings on logout.".into();
+            return;
+        }
+        let verb = if on { "on" } else { "off" };
+        self.status = match addon::set_enabled(&install.wtf_dir(), &folders, on) {
+            Ok(0) => "No characters found. Log in to a character once first.".into(),
+            Ok(n) => format!("Turned {title} {verb} for {n} character(s)."),
+            Err(e) => format!("Could not turn {title} {verb}: {e:#}"),
+        };
+        self.refresh_addons();
+    }
+
     fn show_addon_details(&mut self) {
         let Some(a) = self.current_addon() else {
             return;
@@ -975,6 +1002,7 @@ impl App {
                 }
             }
             Action::Rollback if self.focus != Focus::Browser => self.begin_rollback(),
+            Action::ToggleEnabled if self.focus != Focus::Browser => self.toggle_enabled(),
             _ => {}
         }
     }

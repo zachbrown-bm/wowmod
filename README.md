@@ -92,6 +92,10 @@ git push origin v0.1.0
   backups are turned off with `b`. The uninstall dialog has a "back up first"
   checkbox (toggle with `Space`) that starts from the `b` setting.
 - `Space` marks extra installs so one zip goes to several flavors at once.
+- `e` turns the selected addon (and its sibling folders) on or off for every
+  character, by editing each `AddOns.txt`. Mixed or off turns it on; on turns
+  it off. Refused while World of Warcraft is running, because the game
+  rewrites those files on logout and would undo the change.
 - `c` installs from CurseForge: paste a `curseforge.com/projects/<id>` link
   or the Project ID (an addon page link is looked up through cfwidget, which
   does not know every addon). The addon and everything it requires is
@@ -143,6 +147,7 @@ on a panel focuses it as well. Because the app captures the mouse, hold
 | Space | mark extra install targets |
 | d | uninstall selected addon (confirmation has a backup checkbox) |
 | r | roll back selected addon to its newest backup |
+| e | turn selected addon on / off for every character |
 | c | install from a CurseForge link or project id, with everything it requires |
 | u | update addons installed from CurseForge |
 | a | add a World of Warcraft folder that was not detected |
@@ -258,11 +263,10 @@ updating, so do these together.
   per-character copies when uninstalling.
 - Find orphaned SavedVariables for addons that are no longer installed.
 
-### Enable / disable without launching the game
+### Per-character on / off
 
-`AddOns.txt` is plain text per character, so toggling an addon on/off for one
-or all characters is just a file edit. Needs care: WoW rewrites the file on
-logout, so do this only while the game is not running.
+`e` switches an addon for every character at once. Picking single
+characters would need a character list in the UI.
 
 ### Profiles and sync
 

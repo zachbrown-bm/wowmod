@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
+
 use crate::flavor::Flavor;
 use crate::toc::{self, Toc};
 use crate::wow::Install;
@@ -238,42 +240,44 @@ fn shares_prefix(a: &str, b: &str) -> bool {
     pa.eq_ignore_ascii_case(pb)
 }
 
-/// Merge every `WTF\Account\*\*\*\AddOns.txt` into one state per folder.
+/// Every character's `WTF\Account\<account>\<realm>\<character>\AddOns.txt`.
+fn addons_files(wtf: &Path) -> Vec<PathBuf> {
+    let dirs = |p: &Path| -> Vec<PathBuf> {
+        fs::read_dir(p)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect()
+    };
+    dirs(&wtf.join("Account"))
+        .iter()
+        .flat_map(|account| dirs(account))
+        .flat_map(|realm| dirs(&realm))
+        .map(|character| character.join("AddOns.txt"))
+        .filter(|f| f.is_file())
+        .collect()
+}
+
+/// Merge every character's AddOns.txt into one state per folder.
 fn read_enable_states(wtf: &Path) -> HashMap<String, EnableState> {
     let mut seen: HashMap<String, (bool, bool)> = HashMap::new(); // (any_enabled, any_disabled)
-    let account_dir = wtf.join("Account");
-    let Ok(accounts) = fs::read_dir(&account_dir) else {
-        return HashMap::new();
-    };
-    for account in accounts.flatten() {
-        let Ok(realms) = fs::read_dir(account.path()) else {
+    for f in addons_files(wtf) {
+        let Ok(text) = fs::read_to_string(&f) else {
             continue;
         };
-        for realm in realms.flatten() {
-            if !realm.path().is_dir() {
-                continue;
-            }
-            let Ok(chars) = fs::read_dir(realm.path()) else {
+        for line in text.lines() {
+            let Some((name, state)) = line.split_once(':') else {
                 continue;
             };
-            for ch in chars.flatten() {
-                let f = ch.path().join("AddOns.txt");
-                let Ok(text) = fs::read_to_string(&f) else {
-                    continue;
-                };
-                for line in text.lines() {
-                    let Some((name, state)) = line.split_once(':') else {
-                        continue;
-                    };
-                    let e = seen
-                        .entry(name.trim().to_lowercase())
-                        .or_insert((false, false));
-                    if state.trim().eq_ignore_ascii_case("enabled") {
-                        e.0 = true;
-                    } else {
-                        e.1 = true;
-                    }
-                }
+            let e = seen
+                .entry(name.trim().to_lowercase())
+                .or_insert((false, false));
+            if state.trim().eq_ignore_ascii_case("enabled") {
+                e.0 = true;
+            } else {
+                e.1 = true;
             }
         }
     }
@@ -290,7 +294,74 @@ fn read_enable_states(wtf: &Path) -> HashMap<String, EnableState> {
         .collect()
 }
 
+/// Turn folders on or off for every character, adding them to any
+/// AddOns.txt that does not list them yet. Returns the number of characters.
+pub fn set_enabled(wtf: &Path, folders: &[String], on: bool) -> Result<usize> {
+    let state = if on { "enabled" } else { "disabled" };
+    let files = addons_files(wtf);
+    for file in &files {
+        let text = fs::read_to_string(file)?;
+        let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let mut todo: Vec<&String> = folders.iter().collect();
+        let mut lines: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let name = line.split_once(':').map(|(n, _)| n.trim()).unwrap_or("");
+            match todo.iter().position(|f| f.eq_ignore_ascii_case(name)) {
+                Some(i) => {
+                    todo.remove(i);
+                    lines.push(format!("{name}: {state}"));
+                }
+                None => lines.push(line.to_string()),
+            }
+        }
+        lines.extend(todo.iter().map(|f| format!("{f}: {state}")));
+        let new = lines.join(eol) + eol;
+        if new != text {
+            fs::write(file, new).with_context(|| format!("writing {}", file.display()))?;
+        }
+    }
+    Ok(files.len())
+}
+
 /// Lower-cased set of installed folder names, for dependency checks.
 pub fn folder_name_set(addons: &[InstalledAddon]) -> BTreeSet<String> {
     addons.iter().flat_map(|a| a.folder_names()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_enabled_rewrites_every_character() {
+        let temp = crate::package::TempDir::new().unwrap();
+        let wtf = temp.path.join("WTF");
+        let realm = wtf.join("Account/ACC/Realm");
+        let (a, b) = (realm.join("Alice"), realm.join("Bob"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(
+            a.join("AddOns.txt"),
+            "DBM-Core: enabled\r\nOther: enabled\r\n",
+        )
+        .unwrap();
+        fs::write(b.join("AddOns.txt"), "Other: disabled\n").unwrap();
+
+        let folders = vec!["DBM-Core".to_string(), "DBM-GUI".to_string()];
+        assert_eq!(set_enabled(&wtf, &folders, false).unwrap(), 2);
+        assert_eq!(
+            fs::read_to_string(a.join("AddOns.txt")).unwrap(),
+            "DBM-Core: disabled\r\nOther: enabled\r\nDBM-GUI: disabled\r\n"
+        );
+        assert_eq!(
+            fs::read_to_string(b.join("AddOns.txt")).unwrap(),
+            "Other: disabled\nDBM-Core: disabled\nDBM-GUI: disabled\n"
+        );
+        let states = read_enable_states(&wtf);
+        assert_eq!(states["dbm-core"], EnableState::Disabled);
+        assert_eq!(states["other"], EnableState::Mixed);
+
+        set_enabled(&wtf, &folders, true).unwrap();
+        assert_eq!(read_enable_states(&wtf)["dbm-gui"], EnableState::Enabled);
+    }
 }

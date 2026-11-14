@@ -230,3 +230,59 @@ fn common_roots() -> Vec<PathBuf> {
     }
     out
 }
+
+/// A WoW client is running. It rewrites AddOns.txt on logout, which would
+/// undo any change made meanwhile. Assumes not when the process list
+/// cannot be read.
+pub fn game_running() -> bool {
+    let out = if cfg!(windows) {
+        std::process::Command::new("tasklist")
+            .args(["/fo", "csv", "/nh"])
+            .output()
+    } else {
+        std::process::Command::new("ps")
+            .args(["-A", "-o", "comm="])
+            .output()
+    };
+    let Ok(out) = out else {
+        return false;
+    };
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        // tasklist: "Wow.exe","1234",... / ps: a path
+        let name = if cfg!(windows) {
+            line.split(',').next().unwrap_or("").trim_matches('"')
+        } else {
+            line.trim()
+        };
+        is_wow_process(name)
+    })
+}
+
+/// `Wow.exe`, `WowClassic.exe`, ... on Windows (and Wine), or the
+/// `World of Warcraft` app binary on macOS.
+fn is_wow_process(name: &str) -> bool {
+    let base = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .to_lowercase();
+    base.starts_with("world of warcraft")
+        || (base.starts_with("wow") && base.ends_with(".exe") && base != "wowmod.exe")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognises_wow_clients_but_not_wowmod() {
+        assert!(is_wow_process("Wow.exe"));
+        assert!(is_wow_process("WowClassic.exe"));
+        assert!(is_wow_process(
+            "/Applications/World of Warcraft/_retail_/World of Warcraft.app/Contents/MacOS/World of Warcraft"
+        ));
+        assert!(!is_wow_process("wowmod.exe"));
+        assert!(!is_wow_process("/Users/me/.local/bin/wowmod"));
+        assert!(!is_wow_process("Battle.net.exe"));
+    }
+}

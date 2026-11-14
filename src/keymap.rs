@@ -5,6 +5,11 @@
 //! read after that, so comments and edits survive. Every action maps to a
 //! list of keys; an action missing from the file keeps its default and an
 //! empty list unbinds it.
+//!
+//! When a new version adds or changes a default, the file can end up with a
+//! key bound to two actions. The app then opens a [`KeyReview`] before
+//! anything else so the user can pick, per action, their keys or the new
+//! default. Saving edits only those lines in place, keeping comments.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -157,6 +162,9 @@ pub enum Action {
     Install,
     Uninstall,
     Rollback,
+    #[serde(rename = "curseforge")]
+    CurseForge,
+    Update,
     // Navigation inside the focused panel.
     Up,
     Down,
@@ -191,6 +199,8 @@ impl Action {
         Action::Install,
         Action::Uninstall,
         Action::Rollback,
+        Action::CurseForge,
+        Action::Update,
     ];
     pub const NAV: &[Action] = &[
         Action::Up,
@@ -231,6 +241,10 @@ impl Action {
             Action::Install => "install the selected zip or addon folder",
             Action::Uninstall => "uninstall the selected addon",
             Action::Rollback => "roll back the selected addon to its newest backup",
+            Action::CurseForge => {
+                "install from a CurseForge link or project id, with everything it requires"
+            }
+            Action::Update => "update addons installed from CurseForge",
             Action::Up => "move up",
             Action::Down => "move down",
             Action::PageUp => "move up a page",
@@ -251,6 +265,8 @@ impl Action {
 #[derive(Debug, Clone)]
 pub struct Keymap {
     map: BTreeMap<Action, Vec<Key>>,
+    /// What the file sets, before defaults fill in the rest.
+    overrides: BTreeMap<Action, Vec<Key>>,
 }
 
 fn keys(list: &[&str]) -> Vec<Key> {
@@ -272,14 +288,16 @@ impl Default for Keymap {
         set(Action::PanelBrowser, &["1"]);
         set(Action::PanelInstalls, &["2"]);
         set(Action::PanelAddons, &["3"]);
-        set(Action::Refresh, &["R", "F5"]);
+        set(Action::Refresh, &["F5"]);
         set(Action::ToggleBackups, &["b"]);
         set(Action::ToggleFilter, &["f"]);
         set(Action::GoTo, &["g"]);
         set(Action::AddRoot, &["a"]);
         set(Action::Install, &["i"]);
-        set(Action::Uninstall, &["u"]);
+        set(Action::Uninstall, &["d"]);
         set(Action::Rollback, &["r"]);
+        set(Action::CurseForge, &["c"]);
+        set(Action::Update, &["u"]);
         set(Action::Up, &["Up", "k"]);
         set(Action::Down, &["Down", "j"]);
         set(Action::PageUp, &["PgUp"]);
@@ -293,7 +311,10 @@ impl Default for Keymap {
         set(Action::Confirm, &["y", "Enter"]);
         set(Action::Cancel, &["n", "Esc"]);
         set(Action::Toggle, &["Space", "b", "Tab"]);
-        Keymap { map }
+        Keymap {
+            map,
+            overrides: BTreeMap::new(),
+        }
     }
 }
 
@@ -305,7 +326,8 @@ impl Keymap {
 
     /// Load the user's bindings, creating the file with defaults if it does
     /// not exist. Problems never stop the app: they come back as warnings and
-    /// the defaults are used for whatever could not be read.
+    /// the defaults are used for whatever could not be read. Keys bound twice
+    /// are not a warning; the app shows a [`KeyReview`] for those.
     pub fn load() -> (Keymap, Vec<String>) {
         let Some(path) = Keymap::path() else {
             return (
@@ -330,10 +352,7 @@ impl Keymap {
             .with_context(|| format!("reading {}", path.display()))
             .and_then(|s| Keymap::parse(&s))
         {
-            Ok(km) => {
-                let warnings = km.conflicts();
-                (km, warnings)
-            }
+            Ok(km) => (km, Vec::new()),
             Err(e) => (
                 Keymap::default(),
                 vec![
@@ -349,7 +368,8 @@ impl Keymap {
     pub fn parse(text: &str) -> Result<Keymap> {
         let user: BTreeMap<Action, Vec<Key>> = toml::from_str(text)?;
         let mut km = Keymap::default();
-        km.map.extend(user);
+        km.map.extend(user.clone());
+        km.overrides = user;
         Ok(km)
     }
 
@@ -397,10 +417,9 @@ impl Keymap {
             .unwrap_or_else(|| "(unbound)".into())
     }
 
-    /// Keys bound to more than one action. Global actions win over panel
-    /// navigation, and within a group the earlier action wins, so the
-    /// warnings say which binding is shadowed.
-    pub fn conflicts(&self) -> Vec<String> {
+    /// Keys bound to two actions that can fire at the same time: within the
+    /// global + panel keys, or within the dialog keys.
+    pub fn conflicts(&self) -> Vec<(Key, Action, Action)> {
         let mut out = Vec::new();
         let main: Vec<Action> = Action::GLOBAL.iter().chain(Action::NAV).copied().collect();
         for group in [main.as_slice(), Action::MODAL] {
@@ -408,12 +427,7 @@ impl Keymap {
                 for &b in &group[i + 1..] {
                     for k in self.keys(a) {
                         if self.keys(b).contains(k) {
-                            out.push(format!(
-                                "{k} is bound to both {} and {}; {} wins.",
-                                a.name(),
-                                b.name(),
-                                a.name()
-                            ));
+                            out.push((*k, a, b));
                         }
                     }
                 }
@@ -465,6 +479,118 @@ impl Keymap {
             }
         }
         s
+    }
+}
+
+/// One action in the key review: the user's keys from the file (if the file
+/// sets it) and the current default.
+#[derive(Debug, Clone)]
+pub struct ReviewRow {
+    pub action: Action,
+    pub yours: Option<Vec<Key>>,
+    pub default: Vec<Key>,
+    pub use_default: bool,
+}
+
+impl ReviewRow {
+    pub fn keys(&self) -> &[Key] {
+        match &self.yours {
+            Some(k) if !self.use_default => k,
+            _ => &self.default,
+        }
+    }
+}
+
+/// Every action with the user's keys next to the defaults, shown when the
+/// file binds a key twice. Saving is only allowed once no key is bound twice.
+#[derive(Debug, Clone)]
+pub struct KeyReview {
+    pub rows: Vec<ReviewRow>,
+    pub selected: usize,
+    pub path: PathBuf,
+}
+
+impl KeyReview {
+    /// Starts from the user's keys; actions the file does not set use the
+    /// default, as they do today.
+    pub fn new(km: &Keymap, path: PathBuf) -> KeyReview {
+        let defaults = Keymap::default();
+        let rows: Vec<ReviewRow> = Action::GLOBAL
+            .iter()
+            .chain(Action::NAV)
+            .chain(Action::MODAL)
+            .map(|&a| {
+                let yours = km.overrides.get(&a).cloned();
+                ReviewRow {
+                    action: a,
+                    use_default: yours.is_none(),
+                    yours,
+                    default: defaults.keys(a).to_vec(),
+                }
+            })
+            .collect();
+        // Start on the first action with a clash.
+        let clashes = km.conflicts();
+        let selected = rows
+            .iter()
+            .position(|r| clashes.iter().any(|c| c.1 == r.action || c.2 == r.action))
+            .unwrap_or(0);
+        KeyReview {
+            rows,
+            selected,
+            path,
+        }
+    }
+
+    pub fn move_by(&mut self, delta: isize) {
+        let last = self.rows.len().saturating_sub(1) as isize;
+        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+    }
+
+    /// Pick the default (`true`) or the user's keys for the selected action.
+    /// Actions the file does not set only have the default.
+    pub fn choose(&mut self, use_default: bool) {
+        if let Some(r) = self.rows.get_mut(self.selected)
+            && r.yours.is_some()
+        {
+            r.use_default = use_default;
+        }
+    }
+
+    /// Write the choices back to the file, changing only the actions where
+    /// the user took the new default. Comments and everything else in the
+    /// file stay as they are.
+    pub fn save(&self) -> Result<()> {
+        let text = fs::read_to_string(&self.path)
+            .with_context(|| format!("reading {}", self.path.display()))?;
+        let mut doc: toml_edit::DocumentMut = text.parse()?;
+        for r in self.rows.iter().filter(|r| r.yours.is_some() && r.use_default) {
+            let keys: toml_edit::Array = r.default.iter().map(|k| k.to_string()).collect();
+            match doc.get_mut(&r.action.name()).and_then(|i| i.as_value_mut()) {
+                // Keep any trailing comment on the line.
+                Some(v) => {
+                    let decor = v.decor().clone();
+                    *v = keys.into();
+                    *v.decor_mut() = decor;
+                }
+                None => doc[&r.action.name()] = toml_edit::value(keys),
+            }
+        }
+        fs::write(&self.path, doc.to_string())
+            .with_context(|| format!("writing {}", self.path.display()))
+    }
+
+    /// The bindings as currently chosen.
+    pub fn keymap(&self) -> Keymap {
+        let map: BTreeMap<Action, Vec<Key>> = self
+            .rows
+            .iter()
+            .map(|r| (r.action, r.keys().to_vec()))
+            .collect();
+        Keymap {
+            overrides: map.clone(),
+            map,
+        }
     }
 }
 
@@ -554,13 +680,66 @@ mod tests {
 
     #[test]
     fn reports_conflicts() {
-        let km = Keymap::parse("rollback = [\"u\"]\nmark = [\"i\"]\n").unwrap();
+        let km = Keymap::parse("rollback = [\"d\"]\nmark = [\"i\"]\n").unwrap();
         let c = km.conflicts();
+        let d: Key = "d".parse().unwrap();
+        let i: Key = "i".parse().unwrap();
         assert!(
-            c.iter().any(|w| w.contains("uninstall and rollback")),
+            c.contains(&(d, Action::Uninstall, Action::Rollback)),
             "{c:?}"
         );
-        assert!(c.iter().any(|w| w.contains("install and mark")), "{c:?}");
+        assert!(c.contains(&(i, Action::Install, Action::Mark)), "{c:?}");
+    }
+
+    #[test]
+    fn review_resolves_a_new_default_clashing_with_an_old_file() {
+        // A file from before `update` existed: uninstall on u, which is now
+        // update's default.
+        let km = Keymap::parse("uninstall = [\"u\"]\nquit = [\"q\"]\n").unwrap();
+        assert_eq!(km.conflicts().len(), 1);
+        let mut review = KeyReview::new(&km, PathBuf::from("keymaps.toml"));
+        assert_eq!(review.keymap().conflicts().len(), 1);
+
+        // update is not in the file, so only its default can be picked.
+        let update = review
+            .rows
+            .iter()
+            .position(|r| r.action == Action::Update)
+            .unwrap();
+        review.selected = update;
+        review.choose(false);
+        assert!(review.rows[update].use_default);
+
+        // Taking the new default for uninstall clears the clash.
+        let uninstall = review
+            .rows
+            .iter()
+            .position(|r| r.action == Action::Uninstall)
+            .unwrap();
+        review.selected = uninstall;
+        review.choose(true);
+        let saved = review.keymap();
+        assert!(saved.conflicts().is_empty());
+        assert_eq!(saved.label(Action::Uninstall), "d");
+        assert_eq!(saved.label(Action::Quit), "q");
+
+    }
+
+    #[test]
+    fn review_save_only_changes_the_picked_lines() {
+        let temp = crate::package::TempDir::new().unwrap();
+        let path = temp.path.join("keymaps.toml");
+        let text = "# my keys\nquit = [\"q\"] # just q\n\n# old uninstall\nuninstall = [\"u\"] # muscle memory\n";
+        fs::write(&path, text).unwrap();
+        let km = Keymap::parse(text).unwrap();
+        let mut review = KeyReview::new(&km, path.clone());
+        assert_eq!(review.rows[review.selected].action, Action::Uninstall);
+        review.choose(true);
+        review.save().unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# my keys\nquit = [\"q\"] # just q\n\n# old uninstall\nuninstall = [\"d\"] # muscle memory\n"
+        );
     }
 
     #[test]
@@ -570,7 +749,7 @@ mod tests {
         let (km, warnings) = Keymap::load_from(&path);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(path.is_file());
-        assert_eq!(km.label(Action::Uninstall), "u");
+        assert_eq!(km.label(Action::Uninstall), "d");
 
         fs::write(&path, "uninstall = [\"Del\"]\n").unwrap();
         let (km, warnings) = Keymap::load_from(&path);
@@ -580,6 +759,6 @@ mod tests {
         fs::write(&path, "this is not toml").unwrap();
         let (km, warnings) = Keymap::load_from(&path);
         assert!(!warnings.is_empty());
-        assert_eq!(km.label(Action::Uninstall), "u");
+        assert_eq!(km.label(Action::Uninstall), "d");
     }
 }

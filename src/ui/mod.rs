@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
@@ -20,9 +20,11 @@ use ratatui::widgets::ListState;
 
 use crate::addon::{self, InstalledAddon};
 use crate::config::{Config, DEFAULT_KEY_COLOR};
+use crate::curseforge::{self, Plan};
 use crate::flavor::Flavor;
 use crate::installer;
-use crate::keymap::{Action, Keymap};
+use crate::keymap::{Action, KeyReview, Keymap};
+use crate::manifest::Manifest;
 use crate::package::Package;
 use crate::wow::{self, Install};
 use browser::Browser;
@@ -78,6 +80,9 @@ pub enum Modal {
         title: String,
         lines: Vec<String>,
     },
+    /// Keys bound twice in keymaps.toml: pick yours or the new default per
+    /// action. Shown before anything else; saving is the only way in.
+    Keys(KeyReview),
     /// Uninstall confirmation with a "back up first" checkbox.
     Uninstall {
         lines: Vec<String>,
@@ -89,12 +94,22 @@ pub enum Modal {
 pub enum ConfirmAction {
     Install,
     Rollback { folder: String, backup: PathBuf },
+    CurseForge(Vec<(Install, Plan)>),
     Quit,
 }
 
 pub enum InputAction {
     GoTo,
     AddRoot,
+    CurseForge,
+}
+
+/// Messages from the CurseForge worker thread.
+pub enum Job {
+    /// What installing or updating would do, per target install.
+    Planned(Vec<(Install, Plan)>),
+    Progress(String),
+    Done(String),
 }
 
 /// Result of analysing the browser selection in a background thread.
@@ -116,6 +131,8 @@ pub struct App {
     /// Extra install targets toggled with Space (indices into `installs`).
     pub marked: BTreeSet<usize>,
     pub addons: Vec<InstalledAddon>,
+    /// Folders in the current install that `u` updates from CurseForge.
+    pub curseforge: BTreeSet<String>,
     pub addon_state: ListState,
     pub focus: Focus,
     /// Where each panel was drawn last frame, so mouse clicks can focus it.
@@ -129,6 +146,12 @@ pub struct App {
     pub preview_tx: mpsc::Sender<Preview>,
     /// Install was pressed while analysing; the prompt opens once it's done.
     pub install_queued: bool,
+    /// A CurseForge lookup or install is running.
+    pub job_busy: bool,
+    pub job_rx: mpsc::Receiver<Job>,
+    pub job_tx: mpsc::Sender<Job>,
+    /// A finished lookup waiting for any open dialog to close.
+    pub planned: Option<Vec<(Install, Plan)>>,
     pub should_quit: bool,
 }
 
@@ -137,6 +160,7 @@ impl App {
         let installs = wow::discover(&config.wow_roots);
         let browser = Browser::new(config.start_dir(), config.filter_browser);
         let (tx, rx) = mpsc::channel();
+        let (job_tx, job_rx) = mpsc::channel();
         let mut startup_warnings = Vec::new();
         let key_color = match config.key_color.trim().parse::<Color>() {
             Ok(c) => c,
@@ -157,6 +181,7 @@ impl App {
             install_state: ListState::default(),
             marked: BTreeSet::new(),
             addons: Vec::new(),
+            curseforge: BTreeSet::new(),
             addon_state: ListState::default(),
             focus: Focus::Browser,
             panel_areas: PanelAreas::default(),
@@ -168,6 +193,10 @@ impl App {
             preview_rx: rx,
             preview_tx: tx,
             install_queued: false,
+            job_busy: false,
+            job_rx,
+            job_tx,
+            planned: None,
             should_quit: false,
             config,
             keys,
@@ -187,6 +216,17 @@ impl App {
         }
         app.refresh_addons();
         app.request_preview();
+        if app.config.auto_update {
+            let tx = app.job_tx.clone();
+            std::thread::spawn(move || {
+                // Failures (offline, rate limited) are not worth interrupting for.
+                if let Ok(Some(v)) = crate::selfupdate::update() {
+                    let _ = tx.send(Job::Progress(format!(
+                        "Updated wowmod to {v}. Restart to use it."
+                    )));
+                }
+            });
+        }
         app
     }
 
@@ -236,6 +276,15 @@ impl App {
         self.addons = match self.current_install() {
             Some(i) => addon::scan(i),
             None => Vec::new(),
+        };
+        self.curseforge = match self.current_install() {
+            Some(i) => Manifest::load()
+                .mods
+                .into_iter()
+                .filter(|e| e.install == i.path)
+                .flat_map(|e| e.folders)
+                .collect(),
+            None => BTreeSet::new(),
         };
         let idx = keep
             .and_then(|n| self.addons.iter().position(|a| a.primary.name == n))
@@ -290,6 +339,167 @@ impl App {
         }
     }
 
+    /// Look up on a worker thread what installing `project` needs in each
+    /// target, or with `None`, what updating the mods in the manifest needs.
+    fn start_plan(&mut self, project: Option<String>) {
+        if self.job_busy {
+            self.status = "CurseForge is still busy, try again when it finishes.".into();
+            return;
+        }
+        let targets = self.targets();
+        if targets.is_empty() {
+            self.status = "No WoW install selected.".into();
+            return;
+        }
+        self.job_busy = true;
+        self.status = "Checking CurseForge ...".into();
+        let tx = self.job_tx.clone();
+        std::thread::spawn(move || {
+            let id = match project.as_deref().map(curseforge::project_id).transpose() {
+                Ok(id) => id,
+                Err(e) => {
+                    let _ = tx.send(Job::Done(format!("{e:#}")));
+                    return;
+                }
+            };
+            let mut manifest = Manifest::load();
+            let plans = targets
+                .into_iter()
+                .map(|t| {
+                    let ids = match id {
+                        Some(id) => vec![id],
+                        None => manifest.ids_for(&t),
+                    };
+                    let plan = curseforge::plan(&ids, &t, &manifest);
+                    (t, plan)
+                })
+                .collect();
+            if id.is_none() {
+                // Saves the entries `ids_for` dropped for uninstalled mods.
+                let _ = manifest.save();
+            }
+            let _ = tx.send(Job::Planned(plans));
+        });
+    }
+
+    fn poll_jobs(&mut self) {
+        while let Ok(msg) = self.job_rx.try_recv() {
+            match msg {
+                Job::Planned(plans) => {
+                    self.job_busy = false;
+                    self.status.clear();
+                    self.planned = Some(plans);
+                }
+                Job::Progress(s) => self.status = s,
+                Job::Done(s) => {
+                    self.job_busy = false;
+                    self.refresh_addons();
+                    self.request_preview();
+                    self.status = s;
+                }
+            }
+        }
+        if self.modal.is_none()
+            && let Some(plans) = self.planned.take()
+        {
+            self.confirm_plan(plans);
+        }
+    }
+
+    fn confirm_plan(&mut self, plans: Vec<(Install, Plan)>) {
+        let todo: Vec<_> = plans.iter().flat_map(|(_, p)| &p.todo).collect();
+        let problems = plans.iter().any(|(_, p)| !p.problems.is_empty());
+        if todo.is_empty() && !problems {
+            let checked: usize = plans.iter().map(|(_, p)| p.up_to_date).sum();
+            self.status = if checked == 0 {
+                format!(
+                    "Nothing installed from CurseForge yet. Press {} to add something.",
+                    self.keys.short(Action::CurseForge)
+                )
+            } else {
+                format!("All {checked} CurseForge mod(s) are up to date.")
+            };
+            return;
+        }
+        let mut lines = Vec::new();
+        for (t, p) in &plans {
+            lines.push(format!("Into {}:", t.label()));
+            for m in &p.todo {
+                let verb = if m.update { "update " } else { "install" };
+                lines.push(format!(
+                    "  {verb} {}  ({})",
+                    m.file.display_name,
+                    size(m.file.file_length)
+                ));
+            }
+            if p.up_to_date > 0 {
+                lines.push(format!("  {} already up to date", p.up_to_date));
+            }
+            for e in &p.problems {
+                lines.push(format!("  ! {e}"));
+            }
+        }
+        if todo.is_empty() {
+            self.modal = Some(Modal::Message {
+                title: "CurseForge".into(),
+                lines,
+            });
+            return;
+        }
+        let bytes = todo.iter().map(|m| m.file.file_length).sum();
+        lines.push(String::new());
+        lines.push(format!(
+            "{} download(s), {} in total.",
+            todo.len(),
+            size(bytes)
+        ));
+        lines.push("Addon folders already in AddOns (e.g. from a zip) are replaced.".into());
+        lines.push(if self.config.backups {
+            "The old ones are moved to AddOns.wowmod-backup.".into()
+        } else {
+            "Backups are OFF: the old ones are deleted.".into()
+        });
+        self.modal = Some(Modal::Confirm {
+            title: "Install from CurseForge?".into(),
+            lines,
+            action: ConfirmAction::CurseForge(plans),
+        });
+    }
+
+    /// Download and install the planned mods on a worker thread, reporting
+    /// progress in the status bar.
+    fn do_curseforge(&mut self, plans: Vec<(Install, Plan)>) {
+        self.job_busy = true;
+        let opts = installer::Options {
+            backups: self.config.backups,
+        };
+        let tx = self.job_tx.clone();
+        std::thread::spawn(move || {
+            let mut manifest = Manifest::load();
+            let total: usize = plans.iter().map(|(_, p)| p.todo.len()).sum();
+            let mut n = 0;
+            let mut failed = Vec::new();
+            for (t, plan) in &plans {
+                for m in &plan.todo {
+                    n += 1;
+                    let _ = tx.send(Job::Progress(format!(
+                        "Installing {} ({n}/{total}, {}) ...",
+                        m.file.display_name,
+                        size(m.file.file_length)
+                    )));
+                    if let Err(e) = curseforge::install(m, t, &opts, &mut manifest) {
+                        failed.push(format!("{}: {e:#}", m.file.display_name));
+                    }
+                }
+            }
+            let _ = tx.send(Job::Done(if failed.is_empty() {
+                format!("Installed {total} mod(s) from CurseForge.")
+            } else {
+                format!("{} of {total} failed: {}", failed.len(), failed.join(" | "))
+            }));
+        });
+    }
+
     fn select_install_by(&mut self, delta: isize) {
         if self.installs.is_empty() {
             return;
@@ -337,11 +547,20 @@ impl App {
                 return;
             }
         };
+        let manifest = Manifest::load();
+        let folders: Vec<String> = pkg.roots.iter().map(|r| r.name.clone()).collect();
         let mut lines = Vec::new();
         for t in &targets {
             lines.push(format!("Into {}:", t.label()));
             for l in installer::preview_lines(&pkg.roots, t) {
                 lines.push(format!("  {l}"));
+            }
+            for e in manifest.owners(&t.path, &folders) {
+                lines.push(format!(
+                    "  ! {} was installed from CurseForge. This replaces it and {} will stop updating it.",
+                    e.name,
+                    self.keys.short(Action::Update)
+                ));
             }
             for r in &pkg.roots {
                 if r.toc.supports(&t.flavor) == Some(false) {
@@ -374,21 +593,33 @@ impl App {
         let opts = installer::Options {
             backups: self.config.backups,
         };
+        let mut manifest = Manifest::load();
+        let tracked = manifest.mods.len();
         let mut msgs = Vec::new();
         for t in self.targets() {
             match installer::install(&pkg, &t, &opts) {
-                Ok(rep) => msgs.push(format!(
-                    "{}: {} ({} replaced)",
-                    t.label(),
-                    rep.installed
-                        .iter()
-                        .map(|r| r.folder.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    rep.replaced.len()
-                )),
+                Ok(rep) => {
+                    let folders: Vec<String> =
+                        rep.installed.iter().map(|r| r.folder.clone()).collect();
+                    manifest.forget(&t.path, &folders);
+                    msgs.push(format!(
+                        "{}: {} ({} replaced)",
+                        t.label(),
+                        rep.installed
+                            .iter()
+                            .map(|r| r.folder.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        rep.replaced.len()
+                    ))
+                }
                 Err(e) => msgs.push(format!("{}: FAILED {e:#}", t.label())),
             }
+        }
+        if manifest.mods.len() != tracked
+            && let Err(e) = manifest.save()
+        {
+            msgs.push(format!("could not save manifest: {e:#}"));
         }
         self.status = format!("Installed {}", msgs.join(" | "));
         self.refresh_addons();
@@ -522,11 +753,57 @@ impl App {
         });
     }
 
+    /// Show problems found at startup, if any, in one dialog.
+    fn show_startup_warnings(&mut self) {
+        if !self.startup_warnings.is_empty() {
+            self.modal = Some(Modal::Message {
+                title: "Configuration".into(),
+                lines: std::mem::take(&mut self.startup_warnings),
+            });
+        }
+    }
+
+    /// Key review keys are fixed (the user's keymap is what is being fixed).
+    fn handle_key_review(&mut self, key: event::KeyEvent, mut review: KeyReview) {
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            _ if ctrl_c => self.should_quit = true,
+            KeyCode::Esc => self.should_quit = true,
+            KeyCode::Up | KeyCode::Char('k') => review.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => review.move_by(1),
+            KeyCode::PageUp => review.move_by(-10),
+            KeyCode::PageDown => review.move_by(10),
+            KeyCode::Left | KeyCode::Char('h') => review.choose(false),
+            KeyCode::Right | KeyCode::Char('l') => review.choose(true),
+            KeyCode::Enter if review.keymap().conflicts().is_empty() => {
+                if let Err(e) = review.save() {
+                    self.startup_warnings
+                        .insert(0, format!("Could not save key bindings: {e:#}"));
+                }
+                self.keys = review.keymap();
+                self.show_startup_warnings();
+                return;
+            }
+            _ => {}
+        }
+        if !self.should_quit {
+            self.modal = Some(Modal::Keys(review));
+        }
+    }
+
     /// Ask before leaving. Settings are saved on the way out either way.
     fn begin_quit(&mut self) {
         self.modal = Some(Modal::Confirm {
             title: "Quit?".into(),
-            lines: vec!["Exit wowmod?".into()],
+            lines: if self.job_busy {
+                vec![
+                    "Exit wowmod?".into(),
+                    "A CurseForge download or install is still running and will be cut off.".into(),
+                ]
+            } else {
+                vec!["Exit wowmod?".into()]
+            },
             action: ConfirmAction::Quit,
         });
     }
@@ -683,6 +960,14 @@ impl App {
                 })
             }
             Action::Install => self.begin_install(),
+            Action::CurseForge => {
+                self.modal = Some(Modal::Input {
+                    title: "Install from CurseForge".into(),
+                    value: String::new(),
+                    action: InputAction::CurseForge,
+                })
+            }
+            Action::Update => self.start_plan(None),
             Action::Uninstall => {
                 if self.focus != Focus::Browser {
                     self.focus = Focus::Addons;
@@ -787,6 +1072,7 @@ impl App {
             return;
         };
         match modal {
+            Modal::Keys(review) => self.handle_key_review(key, review),
             Modal::Help { scroll } => match self.keys.nav_action(&key) {
                 Some(Action::Up) => {
                     self.modal = Some(Modal::Help {
@@ -823,6 +1109,7 @@ impl App {
                 Some(Action::Confirm) => match action {
                     ConfirmAction::Install => self.do_install(),
                     ConfirmAction::Rollback { folder, backup } => self.do_rollback(folder, backup),
+                    ConfirmAction::CurseForge(plans) => self.do_curseforge(plans),
                     ConfirmAction::Quit => self.should_quit = true,
                 },
                 Some(Action::Cancel) => self.status = "Cancelled.".into(),
@@ -872,6 +1159,7 @@ impl App {
                                 self.status = format!("Not a folder: {trimmed}");
                             }
                         }
+                        InputAction::CurseForge => self.start_plan(Some(trimmed)),
                         InputAction::AddRoot => {
                             let p = PathBuf::from(&trimmed);
                             let found = wow::scan_root(&p);
@@ -914,6 +1202,15 @@ impl App {
                 }
             },
         }
+    }
+}
+
+/// "476 MB" or "9 KB".
+fn size(bytes: u64) -> String {
+    if bytes < 1_000_000 {
+        format!("{} KB", bytes.div_ceil(1000))
+    } else {
+        format!("{} MB", bytes / 1_000_000)
     }
 }
 
@@ -961,11 +1258,12 @@ pub fn run(config: Config) -> Result<()> {
     let mouse = execute!(std::io::stdout(), EnableMouseCapture).is_ok();
     let mut app = App::new(config, keys);
     warnings.append(&mut app.startup_warnings);
-    if !warnings.is_empty() {
-        app.modal = Some(Modal::Message {
-            title: "Configuration".into(),
-            lines: warnings,
-        });
+    app.startup_warnings = warnings;
+    match Keymap::path() {
+        Some(path) if !app.keys.conflicts().is_empty() => {
+            app.modal = Some(Modal::Keys(KeyReview::new(&app.keys, path)))
+        }
+        _ => app.show_startup_warnings(),
     }
     let result = event_loop(&mut terminal, &mut app);
     if mouse {
@@ -982,6 +1280,7 @@ pub fn run(config: Config) -> Result<()> {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     while !app.should_quit {
         app.poll_preview();
+        app.poll_jobs();
         terminal.draw(|f| render::draw(f, app))?;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
@@ -1101,6 +1400,19 @@ wow
         assert!(text.contains("SomeAddon"));
         assert!(text.contains("no Interface version for Retail"));
 
+        // Addons installed from CurseForge are tagged.
+        let row = |t: &str| {
+            t.lines()
+                .find(|l| l.contains("Existing Addon"))
+                .unwrap()
+                .to_string()
+        };
+        assert!(!row(&text).contains(" cf"));
+        app.curseforge.insert("Existing".into());
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        assert!(row(&buffer_text(terminal.backend())).contains(" cf"));
+        app.curseforge.clear();
+
         // Enter on the addon folder shows its details, not an install prompt.
         app.focus = Focus::Browser;
         app.handle_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1174,8 +1486,8 @@ wow
         assert_eq!(app.addons.len(), 1);
         app.focus = Focus::Addons;
 
-        // 'u' opens the uninstall dialog with the checkbox preset from config.
-        app.handle_key(event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        // 'd' opens the uninstall dialog with the checkbox preset from config.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert!(matches!(
             app.modal,
             Some(Modal::Uninstall { backup: true, .. })
@@ -1214,7 +1526,7 @@ wow
         app.refresh_addons();
         assert!(app.addons.is_empty());
         // Rollback needs a selected addon, so no-op here; the rebinding itself is
-        // covered by 'u' not having opened a rollback dialog above.
+        // covered by 'd' not having opened a rollback dialog above.
         app.handle_key(event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         assert!(app.modal.is_none());
     }
@@ -1257,8 +1569,8 @@ wow
         assert!(text.contains("Ctrl-z rollback"), "{text}");
         assert!(text.contains("F1 help"), "{text}");
 
-        // The old key does nothing; the new one opens the dialog.
-        app.handle_key(event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        // The default key does nothing; the configured one opens the dialog.
+        app.handle_key(event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert!(app.modal.is_none());
         app.handle_key(event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert!(matches!(app.modal, Some(Modal::Uninstall { .. })));
@@ -1322,7 +1634,7 @@ wow
             .map(|x| buf[(x, y)].symbol())
             .collect::<Vec<_>>()
             .join("");
-        let x = row.find("u uninstall").unwrap() as u16;
+        let x = row.find("d uninstall").unwrap() as u16;
         assert_eq!(buf[(x, y)].fg, Color::Rgb(0x8a, 0x8a, 0x8a));
         assert_eq!(buf[(x + 2, y)].fg, Color::DarkGray);
 
@@ -1444,5 +1756,52 @@ wow
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn key_review_blocks_saving_until_no_key_is_bound_twice() {
+        let temp = crate::package::TempDir::new().unwrap();
+        let path = temp.path.join("keymaps.toml");
+        // A file from before `update` existed: uninstall on u, update's default.
+        fs::write(&path, "uninstall = [\"u\"]\n").unwrap();
+        let keys = Keymap::parse("uninstall = [\"u\"]\n").unwrap();
+        let config = Config {
+            browse_dir: Some(temp.path.clone()),
+            ..Config::default()
+        };
+        let mut app = App::new(config, keys);
+        app.modal = Some(Modal::Keys(KeyReview::new(&app.keys, path.clone())));
+        let press = |app: &mut App, code: KeyCode| {
+            app.handle_key(event::KeyEvent::new(code, KeyModifiers::NONE))
+        };
+
+        let backend = TestBackend::new(100, 50);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(
+            text.contains("u is bound to both uninstall and update"),
+            "{text}"
+        );
+
+        // Enter does nothing while the clash is there.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal, Some(Modal::Keys(_))));
+
+        // The cursor starts on the first clash (uninstall): take the new
+        // default, then save.
+        let Some(Modal::Keys(review)) = &app.modal else {
+            unreachable!()
+        };
+        assert_eq!(review.rows[review.selected].action, Action::Uninstall);
+        press(&mut app, KeyCode::Right);
+        terminal.draw(|f| render::draw(f, &mut app)).unwrap();
+        assert!(buffer_text(terminal.backend()).contains("No key is bound twice"));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_none());
+        assert_eq!(app.keys.label(Action::Uninstall), "d");
+        assert_eq!(app.keys.label(Action::Update), "u");
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, "uninstall = [\"d\"]\n");
     }
 }

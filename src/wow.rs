@@ -235,16 +235,12 @@ fn common_roots() -> Vec<PathBuf> {
 /// undo any change made meanwhile. Assumes not when the process list
 /// cannot be read.
 pub fn game_running() -> bool {
-    let out = if cfg!(windows) {
-        std::process::Command::new("tasklist")
-            .args(["/fo", "csv", "/nh"])
-            .output()
+    let (program, args) = if cfg!(windows) {
+        ("tasklist", ["/fo", "csv", "/nh"])
     } else {
-        std::process::Command::new("ps")
-            .args(["-A", "-o", "comm="])
-            .output()
+        ("ps", ["-A", "-o", "comm="])
     };
-    let Ok(out) = out else {
+    let Ok(out) = std::process::Command::new(program).args(args).output() else {
         return false;
     };
     String::from_utf8_lossy(&out.stdout).lines().any(|line| {

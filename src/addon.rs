@@ -262,36 +262,24 @@ fn addons_files(wtf: &Path) -> Vec<PathBuf> {
 
 /// Merge every character's AddOns.txt into one state per folder.
 fn read_enable_states(wtf: &Path) -> HashMap<String, EnableState> {
-    let mut seen: HashMap<String, (bool, bool)> = HashMap::new(); // (any_enabled, any_disabled)
+    let mut states = HashMap::new();
     for f in addons_files(wtf) {
         let Ok(text) = fs::read_to_string(&f) else {
             continue;
         };
-        for line in text.lines() {
-            let Some((name, state)) = line.split_once(':') else {
-                continue;
-            };
-            let e = seen
-                .entry(name.trim().to_lowercase())
-                .or_insert((false, false));
-            if state.trim().eq_ignore_ascii_case("enabled") {
-                e.0 = true;
+        for (name, state) in text.lines().filter_map(|line| line.split_once(':')) {
+            let state = if state.trim().eq_ignore_ascii_case("enabled") {
+                EnableState::Enabled
             } else {
-                e.1 = true;
+                EnableState::Disabled
+            };
+            let entry = states.entry(name.trim().to_lowercase()).or_insert(state);
+            if *entry != state {
+                *entry = EnableState::Mixed;
             }
         }
     }
-    seen.into_iter()
-        .map(|(k, (en, dis))| {
-            let s = match (en, dis) {
-                (true, false) => EnableState::Enabled,
-                (false, true) => EnableState::Disabled,
-                (true, true) => EnableState::Mixed,
-                (false, false) => EnableState::Unknown,
-            };
-            (k, s)
-        })
-        .collect()
+    states
 }
 
 /// Turn folders on or off for every character, adding them to any

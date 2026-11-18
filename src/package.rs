@@ -210,11 +210,17 @@ pub struct TempDir {
 
 impl TempDir {
     pub fn new() -> Result<TempDir> {
+        // The counter keeps two threads asking at the same instant apart.
+        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("wowmod-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "wowmod-{}-{nanos}-{n}",
+            std::process::id()
+        ));
         fs::create_dir_all(&path)?;
         Ok(TempDir { path })
     }

@@ -1,8 +1,10 @@
 mod addon;
 mod config;
+mod curseforge;
 mod flavor;
 mod installer;
 mod keymap;
+mod manifest;
 mod package;
 mod toc;
 mod ui;

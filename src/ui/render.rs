@@ -405,6 +405,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         ],
         Focus::Addons => vec![
             (k(Action::Select), "details"),
+            (k(Action::ToggleEnabled), "on/off"),
             (k(Action::Uninstall), "uninstall"),
             (k(Action::Rollback), "rollback"),
             (k(Action::Update), "update"),

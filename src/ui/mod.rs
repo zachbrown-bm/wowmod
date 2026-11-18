@@ -594,11 +594,7 @@ impl App {
                     msgs.push(format!(
                         "{}: {} ({} replaced)",
                         t.label(),
-                        rep.installed
-                            .iter()
-                            .map(|r| r.folder.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                        folders.join(", "),
                         rep.replaced.len()
                     ))
                 }
@@ -661,6 +657,14 @@ impl App {
         }
         self.refresh_addons();
         self.request_preview();
+    }
+
+    fn open_input(&mut self, action: InputAction, title: &str, value: impl Into<String>) {
+        self.modal = Some(Modal::Input {
+            title: title.into(),
+            value: value.into(),
+            action,
+        });
     }
 
     fn begin_rollback(&mut self) {
@@ -935,26 +939,15 @@ impl App {
                 self.browser.reload();
             }
             Action::GoTo => {
-                self.modal = Some(Modal::Input {
-                    title: "Go to folder".into(),
-                    value: self.browser.cwd.display().to_string(),
-                    action: InputAction::GoTo,
-                })
+                let cwd = self.browser.cwd.display().to_string();
+                self.open_input(InputAction::GoTo, "Go to folder", cwd)
             }
             Action::AddRoot => {
-                self.modal = Some(Modal::Input {
-                    title: "Add World of Warcraft folder".into(),
-                    value: String::new(),
-                    action: InputAction::AddRoot,
-                })
+                self.open_input(InputAction::AddRoot, "Add World of Warcraft folder", "")
             }
             Action::Install => self.begin_install(),
             Action::CurseForge => {
-                self.modal = Some(Modal::Input {
-                    title: "Install from CurseForge".into(),
-                    value: String::new(),
-                    action: InputAction::CurseForge,
-                })
+                self.open_input(InputAction::CurseForge, "Install from CurseForge", "")
             }
             Action::Update => self.start_plan(None),
             Action::Uninstall => {

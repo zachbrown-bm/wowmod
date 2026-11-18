@@ -620,16 +620,6 @@ fn draw_modal(f: &mut Frame, app: &App, area: Rect) {
 /// keys and the default, the chosen side highlighted. Returns the lines and
 /// the index of the first action row.
 fn key_review_lines(app: &App, review: &crate::keymap::KeyReview) -> (Vec<Line<'static>>, usize) {
-    let label = |keys: &[crate::keymap::Key]| {
-        if keys.is_empty() {
-            "(unbound)".to_string()
-        } else {
-            keys.iter()
-                .map(|k| k.to_string())
-                .collect::<Vec<_>>()
-                .join("/")
-        }
-    };
     let conflicts = review.keymap().conflicts();
     let mut out = vec![
         Line::from("Some keys in keymaps.toml are bound to two actions, usually because"),
@@ -670,7 +660,7 @@ fn key_review_lines(app: &App, review: &crate::keymap::KeyReview) -> (Vec<Line<'
         let yours = r
             .yours
             .as_deref()
-            .map(label)
+            .map(crate::keymap::key_label)
             .unwrap_or_else(|| "(default)".into());
         let mut line = Line::from(vec![
             Span::raw(if i == review.selected { "> " } else { "  " }),
@@ -687,7 +677,7 @@ fn key_review_lines(app: &App, review: &crate::keymap::KeyReview) -> (Vec<Line<'
                 if r.use_default { other } else { chosen },
             ),
             Span::styled(
-                label(&r.default),
+                crate::keymap::key_label(&r.default),
                 if r.use_default { chosen } else { other },
             ),
         ]);

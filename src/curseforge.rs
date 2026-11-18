@@ -111,12 +111,11 @@ pub fn project_id(input: &str) -> Result<u64> {
 /// Newest file for the flavor, preferring stable releases over betas.
 fn latest_file(mod_id: u64, flavor: &Flavor) -> Result<Option<File>> {
     let page: Page<File> = get_json(&format!("{MODS}/{mod_id}/files?pageIndex=0&pageSize=50"))?;
-    let fits: Vec<File> = page.data.into_iter().filter(|f| f.fits(flavor)).collect();
-    let stable = fits
-        .iter()
-        .filter(|f| f.release_type == 1)
-        .max_by_key(|f| f.id);
-    Ok(stable.or(fits.iter().max_by_key(|f| f.id)).cloned())
+    Ok(page
+        .data
+        .into_iter()
+        .filter(|f| f.fits(flavor))
+        .max_by_key(|f| (f.release_type == 1, f.id)))
 }
 
 fn required_deps(mod_id: u64) -> Result<Vec<u64>> {

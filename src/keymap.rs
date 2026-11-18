@@ -262,6 +262,17 @@ impl Action {
     }
 }
 
+/// Keys joined with `/`, or `(unbound)`.
+pub fn key_label(keys: &[Key]) -> String {
+    if keys.is_empty() {
+        return "(unbound)".into();
+    }
+    keys.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[derive(Debug, Clone)]
 pub struct Keymap {
     map: BTreeMap<Action, Vec<Key>>,
@@ -399,14 +410,7 @@ impl Keymap {
 
     /// All keys for an action, joined for display: `Left/h/Backspace`.
     pub fn label(&self, a: Action) -> String {
-        let keys = self.keys(a);
-        if keys.is_empty() {
-            return "(unbound)".into();
-        }
-        keys.iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("/")
+        key_label(self.keys(a))
     }
 
     /// Just the first key, for the status bar.
@@ -692,13 +696,19 @@ mod tests {
     }
 
     #[test]
-    fn review_resolves_a_new_default_clashing_with_an_old_file() {
+    fn review_resolves_a_clash_and_saves_only_the_picked_lines() {
         // A file from before `update` existed: uninstall on u, which is now
         // update's default.
-        let km = Keymap::parse("uninstall = [\"u\"]\nquit = [\"q\"]\n").unwrap();
+        let temp = crate::package::TempDir::new().unwrap();
+        let path = temp.path.join("keymaps.toml");
+        let text = "# my keys\nquit = [\"q\"] # just q\n\n# old uninstall\nuninstall = [\"u\"] # muscle memory\n";
+        fs::write(&path, text).unwrap();
+        let km = Keymap::parse(text).unwrap();
         assert_eq!(km.conflicts().len(), 1);
-        let mut review = KeyReview::new(&km, PathBuf::from("keymaps.toml"));
+        let mut review = KeyReview::new(&km, path.clone());
         assert_eq!(review.keymap().conflicts().len(), 1);
+        let uninstall = review.selected;
+        assert_eq!(review.rows[uninstall].action, Action::Uninstall);
 
         // update is not in the file, so only its default can be picked.
         let update = review
@@ -711,30 +721,12 @@ mod tests {
         assert!(review.rows[update].use_default);
 
         // Taking the new default for uninstall clears the clash.
-        let uninstall = review
-            .rows
-            .iter()
-            .position(|r| r.action == Action::Uninstall)
-            .unwrap();
         review.selected = uninstall;
         review.choose(true);
         let saved = review.keymap();
         assert!(saved.conflicts().is_empty());
         assert_eq!(saved.label(Action::Uninstall), "d");
         assert_eq!(saved.label(Action::Quit), "q");
-
-    }
-
-    #[test]
-    fn review_save_only_changes_the_picked_lines() {
-        let temp = crate::package::TempDir::new().unwrap();
-        let path = temp.path.join("keymaps.toml");
-        let text = "# my keys\nquit = [\"q\"] # just q\n\n# old uninstall\nuninstall = [\"u\"] # muscle memory\n";
-        fs::write(&path, text).unwrap();
-        let km = Keymap::parse(text).unwrap();
-        let mut review = KeyReview::new(&km, path.clone());
-        assert_eq!(review.rows[review.selected].action, Action::Uninstall);
-        review.choose(true);
         review.save().unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
